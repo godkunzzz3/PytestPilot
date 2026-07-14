@@ -7,13 +7,14 @@ import pytest
 from firstcoder.agent.loop_limits import AgentLoopLimits
 from firstcoder.eval.adapter import FirstCoderCodingAgentAdapter
 from firstcoder.eval.adapter import RetryableBenchmarkProvider
+from firstcoder.eval.adapter import RequiredFirstToolProvider
 from firstcoder.eval.metrics import collect_benchmark_policy_metrics, collect_context_metrics
 from firstcoder.providers.base import ChatProvider
 from firstcoder.eval.tasks import CodingTask
 from firstcoder.context.events import SessionEvent
 from firstcoder.context.store import JsonlSessionStore
 from firstcoder.providers.errors import ProviderError, ProviderErrorKind
-from firstcoder.providers.types import ChatRequest, ToolCall
+from firstcoder.providers.types import ChatMessage, ChatRequest, ToolCall, ToolChoiceFunction, ToolDefinition
 from firstcoder.providers.types import ChatResponse
 
 
@@ -115,6 +116,15 @@ class FlakyProvider(ChatProvider):
         if self.calls <= self.failures:
             raise ProviderError(self.kind, "temporary provider failure")
         return ChatResponse(provider=self.name, model=self.model, content="done", finish_reason="stop")
+
+
+class CapturingProvider(FakeProvider):
+    def __init__(self) -> None:
+        self.requests: list[ChatRequest] = []
+
+    def complete(self, request: ChatRequest) -> ChatResponse:
+        self.requests.append(request)
+        return super().complete(request)
 
 
 def test_benchmark_policy_metrics_track_vector_hit_and_mutation_before_read(tmp_path: Path) -> None:
@@ -459,6 +469,45 @@ def test_benchmark_prompt_is_identical_across_retrieval_modes(tmp_path: Path):
     ).run_task(vector_task)
 
     assert baseline_loop.messages[0].encode() == vector_loop.messages[0].encode()
+
+
+def test_required_first_tool_provider_forces_only_first_available_tool_call() -> None:
+    inner = CapturingProvider()
+    provider = RequiredFirstToolProvider(inner, tool_name="code_search")
+    request = ChatRequest(
+        messages=[ChatMessage(role="user", content="fix")],
+        tools=[ToolDefinition(name="code_search", description="search", parameters={})],
+    )
+
+    provider.complete(request)
+    provider.complete(request)
+
+    assert inner.requests[0].tool_choice == ToolChoiceFunction("code_search")
+    assert inner.requests[1].tool_choice == "auto"
+    assert provider.call_count == 2
+
+
+def test_vector_required_adapter_wraps_provider_only_when_code_search_is_registered(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    init_repo(repo)
+    adapter = FirstCoderCodingAgentAdapter(
+        session_root=tmp_path / "sessions",
+        provider_retries=0,
+        provider_factory=lambda name: FakeProvider(),
+    )
+    task = CodingTask(
+        instance_id="vector-required",
+        repo_path=repo,
+        problem_statement="Fix it.",
+        metadata={"retrieval_required": True, "retrieval_mode": "vector"},
+    )
+
+    guarded = adapter._create_provider(task, available_tools={"code_search", "view"})
+    fallback = adapter._create_provider(task, available_tools={"grep", "view"})
+
+    assert isinstance(guarded, RequiredFirstToolProvider)
+    assert not isinstance(fallback, RequiredFirstToolProvider)
 
 
 def test_retryable_benchmark_provider_retries_transient_errors() -> None:

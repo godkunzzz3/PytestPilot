@@ -108,6 +108,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out-dir", default="runs/audit-hardening")
     parser.add_argument("--tasks", default="benchmark/local_pytest/tasks.sample.jsonl")
     parser.add_argument("--budget-limit-usd", type=float, default=0.25)
+    parser.add_argument("--starting-cost-usd", type=float, default=0.0)
+    parser.add_argument("--rerun-policy-violations-from", default=None)
     parser.add_argument("--print-plan", action="store_true")
     args = parser.parse_args(argv)
     if args.print_plan:
@@ -116,7 +118,27 @@ def main(argv: list[str] | None = None) -> int:
 
     out_dir = Path(args.out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
-    result_path = out_dir / "paired-experiment-results.json"
+    source_payload: dict[str, Any] | None = None
+    selected_plan = paired_plan()
+    starting_request_count = 0
+    if args.rerun_policy_violations_from:
+        source_payload = json.loads(Path(args.rerun_policy_violations_from).read_text(encoding="utf-8"))
+        selected_plan = [
+            {
+                "task_id": row["task_id"],
+                "run_index": row["run_index"],
+                "retrieval_mode": row["retrieval_mode"],
+                "remediation_rerun": True,
+            }
+            for row in source_payload.get("runs", [])
+            if row.get("retrieval_policy_violation")
+        ]
+        starting_request_count = int(source_payload.get("request_budget", {}).get("request_count") or 0)
+        if not selected_plan:
+            raise RuntimeError("source experiment has no retrieval policy violations to rerun")
+    result_path = out_dir / (
+        "paired-remediation-results.json" if source_payload is not None else "paired-experiment-results.json"
+    )
     raw_provider = create_provider("deepseek")
     if not isinstance(raw_provider, OpenAICompatibleProvider):
         raise RuntimeError("deepseek must use OpenAICompatibleProvider")
@@ -125,47 +147,52 @@ def main(argv: list[str] | None = None) -> int:
         limit_usd=args.budget_limit_usd,
         safety_factor=1.20,
         default_max_output_tokens=MAX_OUTPUT_TOKENS,
+        committed_cost_usd=args.starting_cost_usd,
     )
     payload: dict[str, Any] = {
         "completed": False,
         "budget_exhausted": False,
         "provider_config": provider_audit_config(raw_provider, budget_limit_usd=args.budget_limit_usd),
-        "plan": paired_plan(),
-        "smoke": None,
+        "plan": selected_plan,
+        "smoke": source_payload.get("smoke") if source_payload is not None else None,
         "runs": [],
         "request_budget": budget.snapshot(),
+        "starting_cost_usd": args.starting_cost_usd,
+        "starting_request_count": starting_request_count,
+        "source_experiment": str(Path(args.rerun_policy_violations_from).resolve()) if source_payload else None,
     }
     _save(result_path, payload, budget)
 
     try:
-        smoke_provider = BudgetedProvider(raw_provider, budget)
-        smoke_response = smoke_provider.complete(
-            ChatRequest(
-                messages=[ChatMessage(role="user", content="Reply with exactly AUDIT_SMOKE_OK.")],
-                temperature=TEMPERATURE,
-                max_tokens=64,
+        if source_payload is None:
+            smoke_provider = BudgetedProvider(raw_provider, budget)
+            smoke_response = smoke_provider.complete(
+                ChatRequest(
+                    messages=[ChatMessage(role="user", content="Reply with exactly AUDIT_SMOKE_OK.")],
+                    temperature=TEMPERATURE,
+                    max_tokens=64,
+                )
             )
-        )
-        payload["smoke"] = {
-            "passed": bool(smoke_response.content.strip()),
-            "actual_model": smoke_response.model,
-            "finish_reason": smoke_response.finish_reason,
-            "request_boundary_reserved": budget.snapshot()["request_count"] == 1,
-            **estimate_deepseek_cost(smoke_response.usage),
-            "sdk_max_retries": raw_provider.sdk_max_retries,
-            "thinking": raw_provider.extra_body,
-            "temperature": raw_provider.default_temperature,
-        }
-        _save(result_path, payload, budget)
-        if smoke_response.usage is None:
-            raise RuntimeError("smoke usage missing")
+            payload["smoke"] = {
+                "passed": bool(smoke_response.content.strip()),
+                "actual_model": smoke_response.model,
+                "finish_reason": smoke_response.finish_reason,
+                "request_boundary_reserved": budget.snapshot()["request_count"] == 1,
+                **estimate_deepseek_cost(smoke_response.usage),
+                "sdk_max_retries": raw_provider.sdk_max_retries,
+                "thinking": raw_provider.extra_body,
+                "temperature": raw_provider.default_temperature,
+            }
+            _save(result_path, payload, budget)
+            if smoke_response.usage is None:
+                raise RuntimeError("smoke usage missing")
 
         tasks = {task.id: task for task in load_tasks_jsonl(args.tasks)}
         missing = set(TASK_IDS).difference(tasks)
         if missing:
             raise RuntimeError(f"missing paired tasks: {', '.join(sorted(missing))}")
 
-        for step, item in enumerate(paired_plan(), start=1):
+        for step, item in enumerate(selected_plan, start=1):
             task = tasks[item["task_id"]]
             mode = str(item["retrieval_mode"])
             run_index = int(item["run_index"])
@@ -203,6 +230,7 @@ def main(argv: list[str] | None = None) -> int:
                     "max_attempts": MAX_ATTEMPTS,
                     "thinking": raw_provider.extra_body,
                     "temperature": raw_provider.default_temperature,
+                    "remediation_rerun": bool(item.get("remediation_rerun")),
                 }
             )
             payload["runs"].append(row)
@@ -231,6 +259,9 @@ def main(argv: list[str] | None = None) -> int:
 
 def _save(path: Path, payload: dict[str, Any], budget: RequestBoundaryBudget) -> None:
     payload["request_budget"] = budget.snapshot()
+    payload["cumulative_request_count"] = int(payload.get("starting_request_count") or 0) + int(
+        payload["request_budget"]["request_count"]
+    )
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 

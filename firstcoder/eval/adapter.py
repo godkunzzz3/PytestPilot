@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 import time
+from collections.abc import AsyncIterator
+from dataclasses import replace
 from pathlib import Path
 from typing import Callable, Protocol
 
@@ -22,7 +24,7 @@ from firstcoder.permissions.types import PermissionAction, PermissionDecision, P
 from firstcoder.providers.base import ChatProvider
 from firstcoder.providers.errors import ProviderError
 from firstcoder.providers.factory import create_provider
-from firstcoder.providers.types import ChatRequest, ChatResponse
+from firstcoder.providers.types import ChatRequest, ChatResponse, ChatStreamEvent, ToolChoiceFunction
 from firstcoder.tools.builtin import create_builtin_registry
 from firstcoder.tools.types import Tool
 from firstcoder.utils.sandbox_access import SandboxAccess
@@ -145,15 +147,27 @@ class FirstCoderCodingAgentAdapter:
         )
         return AgentLoop(
             session=session,
-            provider=self._create_provider(),
+            provider=self._create_provider(task, available_tools=set(registry.names())),
             tools=tools,
             limits=self.limits or AgentLoopLimits.swe_lite(),
         )
 
-    def _create_provider(self) -> ChatProvider:
+    def _create_provider(
+        self,
+        task: CodingTask | None = None,
+        *,
+        available_tools: set[str] | None = None,
+    ) -> ChatProvider:
         provider = self.provider_factory(self.provider_name)
         if self.request_budget is not None:
             provider = BudgetedProvider(provider, self.request_budget)
+        if (
+            task is not None
+            and task.metadata.get("retrieval_required")
+            and task.metadata.get("retrieval_mode") == "vector"
+            and "code_search" in (available_tools or set())
+        ):
+            provider = RequiredFirstToolProvider(provider, tool_name="code_search")
         if self.provider_retries <= 0:
             return provider
         return RetryableBenchmarkProvider(
@@ -201,6 +215,45 @@ class RetryableBenchmarkProvider(ChatProvider):
                 if delay > 0:
                     self.sleep(delay)
                 attempt += 1
+
+
+class RequiredFirstToolProvider(ChatProvider):
+    """Generic benchmark decorator forcing one configured tool on the first request only."""
+
+    def __init__(self, provider: ChatProvider, *, tool_name: str) -> None:
+        self.provider = provider
+        self.tool_name = tool_name
+        self.call_count = 0
+        self._required_tool_sent = False
+
+    @property
+    def name(self) -> str:
+        return self.provider.name
+
+    @property
+    def model(self) -> str:
+        return self.provider.model
+
+    @property
+    def capabilities(self):
+        return getattr(self.provider, "capabilities", None)
+
+    def complete(self, request: ChatRequest) -> ChatResponse:
+        self.call_count += 1
+        return self.provider.complete(self._request(request))
+
+    async def astream(self, request: ChatRequest) -> AsyncIterator[ChatStreamEvent]:
+        self.call_count += 1
+        async for event in self.provider.astream(self._request(request)):
+            yield event
+
+    def _request(self, request: ChatRequest) -> ChatRequest:
+        if self._required_tool_sent:
+            return request
+        if not any(tool.name == self.tool_name for tool in request.tools):
+            return request
+        self._required_tool_sent = True
+        return replace(request, tool_choice=ToolChoiceFunction(self.tool_name))
 
 
 class BenchmarkPermissionPolicy(DefaultPermissionPolicy):
