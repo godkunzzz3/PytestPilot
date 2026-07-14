@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -59,6 +61,23 @@ def build_parser() -> argparse.ArgumentParser:
     init_parser = config_subparsers.add_parser("init", help="Create a starter global config file.")
     init_parser.add_argument("--force", action="store_true", help="Overwrite the existing global config.")
 
+    index_parser = subparsers.add_parser("index", help="Build or inspect the local semantic code index.")
+    index_subparsers = index_parser.add_subparsers(dest="index_command")
+    for name in ("build", "status", "rebuild"):
+        command_parser = index_subparsers.add_parser(name)
+        command_parser.add_argument("--project", default=".")
+        command_parser.add_argument("--data-root", default=None)
+        command_parser.add_argument("--cache-dir", default=None)
+
+    fix_parser = subparsers.add_parser("pytest-fix", help="Diagnose and repair a Python/pytest failure.")
+    fix_parser.add_argument("--project", default=".")
+    fix_parser.add_argument("--data-root", default=None)
+    fix_parser.add_argument("--provider", default=None)
+    fix_parser.add_argument("--test-command", default="python -m pytest -q --tb=short")
+    fix_parser.add_argument("--failure-log", default=None)
+    fix_parser.add_argument("--max-attempts", type=_positive_int, default=2)
+    fix_parser.add_argument("--json-out", default="runs/pytest-fix-result.json")
+
     parser.add_argument("--project", default=".", help="Project root for tools and AGENTS.md.")
     parser.add_argument("--data-root", default=None, help="Directory for FirstCoder session data.")
     parser.add_argument("--session-id", default=None, help="Session id to create or reuse.")
@@ -85,6 +104,10 @@ def main(
     args = build_parser().parse_args(argv)
     if args.command == "config":
         return run_config_command(args)
+    if args.command == "index":
+        return run_index_command(args)
+    if args.command == "pytest-fix":
+        return run_pytest_fix_command(args)
 
     if args.tui or (args.message is None and stdin_text is None and sys.stdin.isatty() and not args.interactive):
         config = CliConfig(
@@ -224,6 +247,101 @@ def run_config_command(args: argparse.Namespace) -> int:
         return 0
     print(f"error: unknown config command: {command}", file=sys.stderr)
     return 2
+
+
+def run_index_command(args: argparse.Namespace) -> int:
+    from firstcoder.retrieval import CodeIndexer, FastEmbedProvider, QdrantLocalVectorStore, repository_id
+
+    project = Path(args.project).resolve()
+    data_root = Path(args.data_root).resolve() if args.data_root else project / ".firstcoder"
+    cache_dir = Path(args.cache_dir).expanduser() if args.cache_dir else Path(
+        os.environ.get("FIRSTCODER_FASTEMBED_CACHE", Path.home() / "Library" / "Caches" / "firstcoder" / "fastembed")
+    )
+    embedder = FastEmbedProvider(cache_dir=cache_dir, local_files_only=True)
+    store = QdrantLocalVectorStore(
+        data_root / "qdrant",
+        dimension=embedder.dimension,
+        model_name=embedder.model_name,
+    )
+    try:
+        indexer = CodeIndexer(project, embedder=embedder, store=store, repo_id=repository_id(project))
+        command = args.index_command or "status"
+        payload = indexer.status() if command == "status" else indexer.build(rebuild=command == "rebuild").to_dict()
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+    except Exception as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        store.close()
+
+
+def run_pytest_fix_command(args: argparse.Namespace) -> int:
+    from firstcoder.retrieval import (
+        FastEmbedProvider,
+        QdrantLocalVectorStore,
+        SemanticCodeSearch,
+        repository_id,
+    )
+    from firstcoder.tools.code_search import create_code_search_tool
+    from firstcoder.workflows.pytest_fix import PytestFixWorkflow
+
+    project = Path(args.project).resolve()
+    data_root = Path(args.data_root).resolve() if args.data_root else project / ".firstcoder"
+    semantic_search = None
+    qdrant_store = None
+    extra_tools = []
+    qdrant_path = data_root / "qdrant"
+    if (qdrant_path / "storage").exists():
+        try:
+            cache_dir = Path(
+                os.environ.get(
+                    "FIRSTCODER_FASTEMBED_CACHE",
+                    Path.home() / "Library" / "Caches" / "firstcoder" / "fastembed",
+                )
+            )
+            embedder = FastEmbedProvider(cache_dir=cache_dir, local_files_only=True)
+            qdrant_store = QdrantLocalVectorStore(
+                qdrant_path,
+                dimension=embedder.dimension,
+                model_name=embedder.model_name,
+            )
+            semantic_search = SemanticCodeSearch(
+                embedder=embedder,
+                store=qdrant_store,
+                repo_id=repository_id(project),
+            )
+            extra_tools.append(create_code_search_tool(project, search=semantic_search))
+        except Exception:
+            semantic_search = None
+            qdrant_store = None
+    adapter = FirstCoderCodingAgentAdapter(
+        model_name_or_path="firstcoder-pytest-fix",
+        provider_name=args.provider,
+        session_root=data_root / "pytest-fix-sessions",
+        provider_retries=0,
+        extra_tools=extra_tools,
+    )
+    failure_log = Path(args.failure_log).read_text(encoding="utf-8") if args.failure_log else None
+    try:
+        result = PytestFixWorkflow(
+            project,
+            adapter=adapter,
+            semantic_search=semantic_search,
+            max_attempts=args.max_attempts,
+        ).run(
+            test_command=args.test_command,
+            failure_log=failure_log,
+            json_out=args.json_out,
+        )
+    except Exception as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        if qdrant_store is not None:
+            qdrant_store.close()
+    print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
+    return result.exit_code
 
 
 def _effective_model(config) -> str:

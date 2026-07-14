@@ -23,6 +23,7 @@ from firstcoder.providers.errors import ProviderError
 from firstcoder.providers.factory import create_provider
 from firstcoder.providers.types import ChatRequest, ChatResponse
 from firstcoder.tools.builtin import create_builtin_registry
+from firstcoder.tools.types import Tool
 from firstcoder.utils.sandbox_access import SandboxAccess
 
 
@@ -50,6 +51,7 @@ class FirstCoderCodingAgentAdapter:
         provider_retry_initial_delay_seconds: float = 2.0,
         loop_factory: LoopFactory | None = None,
         provider_factory: ProviderFactory = create_provider,
+        extra_tools: list[Tool] | None = None,
     ) -> None:
         self.model_name_or_path = model_name_or_path
         self.provider_name = provider_name
@@ -59,6 +61,7 @@ class FirstCoderCodingAgentAdapter:
         self.provider_retry_initial_delay_seconds = provider_retry_initial_delay_seconds
         self.loop_factory = loop_factory or self._create_loop
         self.provider_factory = provider_factory
+        self.extra_tools = list(extra_tools or [])
 
     def run_task(self, task: CodingTask) -> CodingTaskResult:
         session_root = self._session_root_for_task(task)
@@ -98,6 +101,8 @@ class FirstCoderCodingAgentAdapter:
             include_network_tools=False,
             access=sandbox_access,
         )
+        for tool in self.extra_tools:
+            registry.register(tool)
         permission_manager = PermissionManager(
             policy=BenchmarkPermissionPolicy(task.repo_path),
             grants=PermissionGrantStore(),

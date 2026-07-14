@@ -384,3 +384,46 @@ def test_main_parses_benchmark_mode_for_single_message(tmp_path: Path):
             benchmark=True,
         )
     ]
+
+
+def test_parser_supports_index_and_pytest_fix_subcommands() -> None:
+    parser = cli.build_parser()
+
+    index = parser.parse_args(["index", "build", "--project", "."])
+    fix = parser.parse_args(
+        [
+            "pytest-fix",
+            "--project",
+            ".",
+            "--test-command",
+            "python -m pytest -q",
+            "--failure-log",
+            "ci.log",
+            "--max-attempts",
+            "2",
+            "--json-out",
+            "runs/result.json",
+        ]
+    )
+
+    assert index.command == "index"
+    assert index.index_command == "build"
+    assert fix.command == "pytest-fix"
+    assert fix.failure_log == "ci.log"
+    assert fix.max_attempts == 2
+
+
+def test_main_routes_pytest_fix_without_starting_chat_provider(monkeypatch, capsys) -> None:
+    seen = []
+
+    def fake_run(args):
+        seen.append(args)
+        return 2
+
+    monkeypatch.setattr(cli, "run_pytest_fix_command", fake_run)
+
+    exit_code = main(["pytest-fix", "--project", ".", "--test-command", "python -m pytest -q"])
+
+    assert exit_code == 2
+    assert seen[0].command == "pytest-fix"
+    assert capsys.readouterr().err == ""
