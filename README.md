@@ -211,7 +211,9 @@ Run the repair workflow after configuring an available provider:
 
 The command performs at most two repair attempts by default and never retries a Provider request. If a local index is unavailable, structured pytest parsing and deterministic source candidates continue to work. Vector results are candidates only; the agent must read current source before editing it.
 
-The DeepSeek preset uses the official OpenAI-compatible endpoint, reads credentials only from `DEEPSEEK_API_KEY`, and defaults to `deepseek-v4-flash` with thinking disabled and a 4096-token output cap. Thinking-mode tool calling and `reasoning_content` round-trip are intentionally deferred.
+The DeepSeek preset uses the official OpenAI-compatible endpoint, reads credentials only from `DEEPSEEK_API_KEY`, and defaults to `deepseek-v4-flash` with thinking disabled, temperature 0, a 4096-token output cap, and OpenAI SDK retries disabled. Thinking-mode tool calling and `reasoning_content` round-trip are intentionally deferred.
+
+The audited DeepSeek benchmark path adds a shared request-boundary budget: before each request it estimates prompt tokens, applies a 1.20 safety factor, reserves the configured maximum output, and charges all input at the cache-miss rate. Actual usage is reconciled after the response; missing usage stops later requests. This reduces overspend risk but cannot guarantee the provider's final invoice. Benchmark sessions load no global skills, exclude `ask_user`, require exact source reads before edits, and require `code_search → view/read_multi` for retrieval-required Vector tasks.
 
 The reproducible benchmark contains nine tasks. Its evaluator confirms the initial failure, rejects test edits and out-of-scope writes, and records Provider/Tool counts, actual usage (or `null`), estimated input tokens, context/archive metrics, elapsed time, final diff, and transcript path. Offline tests use Fake Provider, Fake Embedding, and Fake Vector Store:
 
@@ -224,7 +226,9 @@ The reproducible benchmark contains nine tasks. Its evaluator confirms the initi
   tests/test_pytest_fix_workflow.py -q
 ```
 
-See [the demo runbook](docs/PYTEST_FIX_DEMO_RUNBOOK.md) and [the one-week MVP scope](docs/MVP_GOAL.md). Do not run the default model-backed benchmark while its configured Provider has no quota; the test suite does not make real Provider requests.
+The 2026-07-14 controlled two-task sample produced 6/6 Baseline and 6/6 policy-compliant Vector passes. Vector made six actual `code_search` calls and re-read candidates, but the equal pass rates do not show an accuracy improvement; Vector used more tokens and time in this tiny sample. Two initial Vector runs that skipped `code_search` were excluded and transparently rerun after the policy gate was enforced. Total new conservative cost, including Smoke and excluded runs, was `$0.08710954` under the `$0.25` limit.
+
+See [the DeepSeek benchmark audit](docs/DEEPSEEK_BENCHMARK_AUDIT.md), [the demo runbook](docs/PYTEST_FIX_DEMO_RUNBOOK.md), and [the one-week MVP scope](docs/MVP_GOAL.md). Do not run a model-backed benchmark without explicit quota authorization and the request-budget wrapper; the test suite does not make real Provider requests.
 
 ## Philosophy
 

@@ -94,8 +94,8 @@ Summary 的核心字段包括：
 
 | Task | Baseline Hit@5 | Vector Hit@5 | Index | Query |
 | --- | ---: | ---: | ---: | ---: |
-| `service_repository_contract` | true | true | 0.033658s | 0.006848s |
-| `parser_dispatch` | false | true | 0.038659s | 0.003597s |
+| `service_repository_contract` | true | true | 0.028569s | 0.004178s |
+| `parser_dispatch` | false | true | 0.049246s | 0.003564s |
 
 这是候选检索准确性，不是模型修复通过率。百炼/Qwen 免费额度仍然耗尽；下节 DeepSeek 数据来自另一套官方 Provider 配置。
 
@@ -112,9 +112,20 @@ Summary 的核心字段包括：
 - Vector 组虽然只额外启用了 `code_search`，但模型没有实际调用它；Agent-level Relevant File Hit@5 均为 `null`，所以 11.1 个百分点的单次通过率差不能归因于向量检索。离线 Hit@5 仍以第 6 节为准。
 - 本轮不实现 thinking-mode Tool Calling，也不保存或回传 `reasoning_content`；这是后续 TODO。
 
-## 8. 额度恢复后的命令
+### 审计加固后的两任务配对样本
 
-先由用户明确确认额度恢复，再做 1 个 Smoke Task、3 个小任务，稳定后才运行完整 9 题。命令会使用现有 Provider 配置，不应复制或打印 API Key：
+请求边界预算会在每次发送前保守预留成本并在 usage 返回后对账；usage 缺失会停止后续请求。Benchmark 默认不加载全局 Skill，Vector 的 `retrieval_required` 任务强制先调用 `code_search`，并要求再次读取候选源码。
+
+| Mode | 合规通过 | 平均输入 | 平均输出 | 平均 Provider calls | 平均 Tool calls | 平均耗时 | 合规样本成本 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Baseline | 6/6 | 38,412.3 | 742.3 | 6.33 | 5.33 | 11.94s | `$0.03351348` |
+| Vector | 6/6 | 48,576.7 | 1,020.7 | 7.33 | 8.33 | 14.05s | `$0.04251912` |
+
+Vector 六个合规运行均有一次 `code_search`，且候选随后被 `read_multi` 读取；Relevant-file Hit@5 为 6/6。初始运行中两个未调用 `code_search` 的结果被标记为 policy violation 并排除，策略门修复后补跑。包括 Smoke、排除项和补跑在内的本轮新成本为 `$0.08710954`，未触发 `$0.25` 中止。样本太小且通过率相同，只能说明检索链路确实被使用，不能说明准确率提升。
+
+## 8. 明确授权后的命令
+
+只有用户明确确认凭证、额度和预算后才运行真实模型。命令会使用现有 Provider 配置，不应复制或打印 API Key；DeepSeek 审计实验使用 `benchmark.deepseek_paired` 的请求预算入口，不使用未包装的默认 Runner：
 
 ```sh
 .venv/bin/firstcoder pytest-fix \
@@ -122,21 +133,19 @@ Summary 的核心字段包括：
   --test-command "python -m pytest -q --tb=short" \
   --json-out runs/pytest-fix-result.json
 
-.venv/bin/python benchmark/local_pytest/runner.py \
-  --workdir runs/local-pytest-baseline \
-  --summary-out runs/local-pytest-baseline.json \
-  --retrieval-mode baseline \
-  --max-tasks 1
+.venv/bin/python -m benchmark.deepseek_paired \
+  --out-dir runs/audit-hardening \
+  --budget-limit-usd 0.25
 ```
 
-确认小任务稳定后，将 `--retrieval-mode` 改为 `vector` 并对相同题集运行；不得改题或改判分命令。当前 CLI 将 Provider retry 固定为 0。
+该入口固定执行交错 Baseline/Vector 计划；不得改题、Prompt 或判分命令。SDK 和 FirstCoder retry 都为 0。
 
 ## 已知限制
 
 - 仅支持 Python、pytest 文本日志和本地仓库。
 - 没有多 Agent、多语言、reranker、云 Qdrant、专用 TUI 或新 Trace 子系统。
 - `pytest-fix` 的语义 Tool 只在本地索引存在且可打开时注入；否则 fail-open 到确定性路径。
-- mutation-before-read 当前是工作流完成后的策略检查，不是新的全局 FreshSourceGuard。
+- source-read 当前是 Benchmark/Evaluator 的逐路径事后策略检查，不是新的全局 FreshSourceGuard；尚未启用 hash-based stale-read 判定。
 - 默认模型 Benchmark 是真实 Provider 路径；额度未恢复时不要运行。
 
 ## 失败记录模板

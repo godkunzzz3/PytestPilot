@@ -105,7 +105,10 @@
 - A–F 已实现：指标贯通、pytest Parser、AST 切分、FastEmbed、Qdrant local、`code_search`、`pytest-fix` CLI 和 9 个 Benchmark 任务。
 - 9 个任务均已在干净临时目录确认初始 pytest 非零退出；Evaluator 会拒绝测试文件修改和 editable scope 外写入。
 - Fake Provider 工作流已覆盖 `view → edit → focused pytest → full pytest`；所有 Provider 自动重试设为 0。
-- 本地缓存 `BAAI/bge-small-en-v1.5`（384 维）与临时 Qdrant 已验证。`parser_dispatch` 的 deterministic baseline Relevant-file Hit@5 为 false，vector 为 true；索引 0.038659 秒，查询 0.003597 秒。
-- `service_repository_contract` 的两种模式 Relevant-file Hit@5 均为 true；vector 索引 0.033658 秒，查询 0.006848 秒。
+- 本地缓存 `BAAI/bge-small-en-v1.5`（384 维）与 Qdrant local-persistent 已重跑。`parser_dispatch` 的 deterministic baseline Relevant-file Hit@5 为 false，vector 为 true；索引 0.049246 秒，查询 0.003564 秒。
+- `service_repository_contract` 的两种模式 Relevant-file Hit@5 均为 true；vector 索引 0.028569 秒，查询 0.004178 秒。原始 Top-5 保存在 gitignored 的 `runs/audit-hardening/offline-retrieval-results.json`。
 - 百炼仍未恢复；2026-07-14 另使用 DeepSeek 官方 API、`deepseek-v4-flash`、thinking disabled 完成真实验证。最终 Smoke 7/7 通过；9 题 baseline 7/9，9 题 vector-enabled 8/9，累计保守估算成本 `$0.23979872`。Vector 组没有实际调用 `code_search`，因此通过率差不能归因于向量检索，Agent-level Hit@5 为 `null`。
-- 阶段 G 最终完整测试：`.venv/bin/python -m pytest tests -q` 在隔离 Provider 环境下得到 853 passed、2 skipped、0 failed（36.26 秒）；另行启用缓存 FastEmbed 集成测试得到 1 passed（0.67 秒）。
+- DeepSeek 审计加固已关闭 SDK 隐式 retry，增加请求前 1.20 安全系数预算预留、usage 缺失停机、Benchmark Skill 隔离、tree/diagnostics 加固、逐路径 source-read 校验和 retrieval-required 策略。
+- 两个语义任务的受控小样本中，Baseline 6/6、合规 Vector 6/6；Vector 实际调用 `code_search` 6 次并重新读取候选。两组通过率相同，不能声称检索提升准确率；Vector 平均 Token、Tool Call 与耗时更高。
+- 初始 12 项中有两个 Vector 运行测试虽通过但未调用 `code_search`，被标记并排除；策略门加固后仅补跑这两项并通过。本轮 Smoke、12 项及 2 个补跑累计保守成本 `$0.08710954`，低于 `$0.25`，无 usage 缺失或预算中止。
+- 加固后完整测试：`.venv/bin/python -m pytest tests -q` 得到 891 passed、2 skipped、0 failed（37.61 秒）；文档完成后仍需执行最终一次完整验证。
