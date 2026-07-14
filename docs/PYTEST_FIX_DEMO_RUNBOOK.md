@@ -47,14 +47,14 @@ FastEmbed 默认缓存目录是 `~/Library/Caches/firstcoder/fastembed`，可用
 ## 3. 构建与查询本地索引（约 90 秒）
 
 ```sh
-.venv/bin/python -m firstcoder.cli index build --project .
-.venv/bin/python -m firstcoder.cli index status --project .
+.venv/bin/firstcoder index build --project .
+.venv/bin/firstcoder index status --project .
 ```
 
 文件变化后再次 `build` 会增量更新；模型或维度变化时执行：
 
 ```sh
-.venv/bin/python -m firstcoder.cli index rebuild --project .
+.venv/bin/firstcoder index rebuild --project .
 ```
 
 `code_search` 返回路径、symbol、行号、score、content hash 和有界预览。索引中的副本不能直接作为编辑依据。
@@ -97,14 +97,27 @@ Summary 的核心字段包括：
 | `service_repository_contract` | true | true | 0.033658s | 0.006848s |
 | `parser_dispatch` | false | true | 0.038659s | 0.003597s |
 
-这是候选检索准确性，不是模型修复通过率。因百炼/Qwen 免费额度耗尽，真实 Smoke Test、真实模型 Benchmark、真实 token usage 和 baseline/vector 模型 pass rate 均未获得。
+这是候选检索准确性，不是模型修复通过率。百炼/Qwen 免费额度仍然耗尽；下节 DeepSeek 数据来自另一套官方 Provider 配置。
 
-## 7. 额度恢复后的命令
+## 7. DeepSeek 真实验证（2026-07-14）
+
+固定配置：官方 `https://api.deepseek.com`、`deepseek-v4-flash`、thinking disabled、4096 输出上限、retry 0、每题 8 tool rounds、串行运行。成本将全部输入按 cache-miss `$0.14/1M`、输出按 `$0.28/1M` 保守估算。
+
+- 最终 Smoke 7/7 通过：非流式、流式 usage-only chunk、单 Tool、Tool Result 回填和两轮 Tool Call 均成功；cache hit/miss 字段可解析。
+- 1 题门禁：1/1 通过。
+- 3 题门禁：1/3 通过；两个失败均为 8 轮内未编辑，不是 Provider 协议错误。
+- 9 题 baseline：7/9（77.8%），平均 75,382 输入、639 输出、6.78 Provider calls、6.89 Tool calls、1.11 source reads、9.96 秒、`$0.010732`/题。
+- 9 题 vector-enabled：8/9（88.9%），平均 77,472 输入、731 输出、6.67 Provider calls、7.22 Tool calls、1.11 source reads、11.15 秒、`$0.011051`/题。
+- 含两次失败 Smoke 在内累计保守成本：`$0.23979872`，未触发 `$1.00` 预算中止。
+- Vector 组虽然只额外启用了 `code_search`，但模型没有实际调用它；Agent-level Relevant File Hit@5 均为 `null`，所以 11.1 个百分点的单次通过率差不能归因于向量检索。离线 Hit@5 仍以第 6 节为准。
+- 本轮不实现 thinking-mode Tool Calling，也不保存或回传 `reasoning_content`；这是后续 TODO。
+
+## 8. 额度恢复后的命令
 
 先由用户明确确认额度恢复，再做 1 个 Smoke Task、3 个小任务，稳定后才运行完整 9 题。命令会使用现有 Provider 配置，不应复制或打印 API Key：
 
 ```sh
-.venv/bin/python -m firstcoder.cli pytest-fix \
+.venv/bin/firstcoder pytest-fix \
   --project /path/to/python-repo \
   --test-command "python -m pytest -q --tb=short" \
   --json-out runs/pytest-fix-result.json

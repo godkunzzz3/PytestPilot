@@ -45,6 +45,7 @@ class ProviderCapabilities:
     supports_json_mode: bool = False
     supports_vision: bool = False
     supports_reasoning: bool = False
+    supports_stream_usage: bool = False
     token_param: TokenParam = "max_tokens"
 
 
@@ -58,6 +59,8 @@ class TokenUsage:
     input_tokens: int | None = None
     output_tokens: int | None = None
     total_tokens: int | None = None
+    prompt_cache_hit_tokens: int | None = None
+    prompt_cache_miss_tokens: int | None = None
 
 
 @dataclass(slots=True)

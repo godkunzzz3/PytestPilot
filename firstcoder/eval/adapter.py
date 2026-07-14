@@ -12,7 +12,7 @@ from firstcoder.agent.loop_limits import AgentLoopLimits
 from firstcoder.agent.session import AgentSession
 from firstcoder.context.store import JsonlSessionStore
 from firstcoder.eval.patch import collect_git_diff
-from firstcoder.eval.metrics import collect_context_metrics
+from firstcoder.eval.metrics import collect_benchmark_policy_metrics, collect_context_metrics
 from firstcoder.eval.tasks import CodingTask, CodingTaskResult
 from firstcoder.permissions.grants import PermissionGrantStore
 from firstcoder.permissions.manager import PermissionManager
@@ -34,6 +34,7 @@ class CodingAgentAdapter(Protocol):
 
 LoopFactory = Callable[[CodingTask, Path], AgentLoop]
 ProviderFactory = Callable[[str | None], ChatProvider]
+ExtraToolsFactory = Callable[[CodingTask], list[Tool]]
 _UNSAFE_SESSION_DIR_CHARS = re.compile(r"[/\\:]")
 
 
@@ -52,6 +53,7 @@ class FirstCoderCodingAgentAdapter:
         loop_factory: LoopFactory | None = None,
         provider_factory: ProviderFactory = create_provider,
         extra_tools: list[Tool] | None = None,
+        extra_tools_factory: ExtraToolsFactory | None = None,
     ) -> None:
         self.model_name_or_path = model_name_or_path
         self.provider_name = provider_name
@@ -62,6 +64,7 @@ class FirstCoderCodingAgentAdapter:
         self.loop_factory = loop_factory or self._create_loop
         self.provider_factory = provider_factory
         self.extra_tools = list(extra_tools or [])
+        self.extra_tools_factory = extra_tools_factory
 
     def run_task(self, task: CodingTask) -> CodingTaskResult:
         session_root = self._session_root_for_task(task)
@@ -70,16 +73,23 @@ class FirstCoderCodingAgentAdapter:
         response = loop.run_user_turn(_build_task_prompt(task))
         transcript_path = session_root / "sessions" / f"{_session_dir_name(task.instance_id)}.jsonl"
         model_patch = collect_git_diff(task.repo_path, include_untracked=True)
+        runtime_metrics = collect_context_metrics(
+            transcript_path=transcript_path,
+            provider_call_count=_provider_call_count(loop),
+        )
+        runtime_metrics.update(
+            collect_benchmark_policy_metrics(
+                transcript_path=transcript_path,
+                relevant_files=task.metadata.get("relevant_files") or [],
+            )
+        )
         return CodingTaskResult(
             instance_id=task.instance_id,
             model_name_or_path=self.model_name_or_path,
             model_patch=model_patch,
             transcript_path=transcript_path,
             raw_response=response.content,
-            runtime_metrics=collect_context_metrics(
-                transcript_path=transcript_path,
-                provider_call_count=_provider_call_count(loop),
-            ),
+            runtime_metrics=runtime_metrics,
         )
 
     def _session_root_for_task(self, task: CodingTask) -> Path:
@@ -101,7 +111,10 @@ class FirstCoderCodingAgentAdapter:
             include_network_tools=False,
             access=sandbox_access,
         )
-        for tool in self.extra_tools:
+        task_tools = [*self.extra_tools]
+        if self.extra_tools_factory is not None:
+            task_tools.extend(self.extra_tools_factory(task))
+        for tool in task_tools:
             registry.register(tool)
         permission_manager = PermissionManager(
             policy=BenchmarkPermissionPolicy(task.repo_path),
@@ -211,7 +224,9 @@ def _build_task_prompt(task: CodingTask) -> str:
         "Problem statement:\n"
         f"{task.problem_statement.strip()}\n\n"
         "Return by editing files in the repository. Do not write a final patch manually. "
-        "Use tests when useful, keep changes minimal, and leave the repository with the fix applied."
+        "Use tests when useful, keep changes minimal, and leave the repository with the fix applied. "
+        "Never assume the repository is /workspace; tool paths and cwd are relative to the actual project root. "
+        "Use the diagnostics tool for pytest so it runs with FirstCoder's active Python environment."
     )
 
 

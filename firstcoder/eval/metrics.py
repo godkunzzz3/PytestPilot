@@ -14,6 +14,8 @@ _MESSAGE_EVENT_TYPES = {"user_message", "assistant_message", "tool_result"}
 _COMPACTION_EVENT_TYPES = {"compaction_completed", "llm_compaction_completed"}
 _SOURCE_READ_TOOLS = {"view", "read_multi"}
 _NON_EXECUTION_REQUEST_TYPES = {"permission_confirmation", "permission_denied"}
+_MUTATION_TOOLS = {"edit", "write", "apply_patch"}
+_LOCAL_ASSISTANT_FINISH_REASONS = {"tool_round_limit", "provider_call_limit", "waiting_for_user_input"}
 
 
 def empty_runtime_metrics() -> dict[str, Any]:
@@ -26,6 +28,12 @@ def empty_runtime_metrics() -> dict[str, Any]:
         "actual_input_tokens": None,
         "actual_output_tokens": None,
         "actual_total_tokens": None,
+        "prompt_tokens": None,
+        "completion_tokens": None,
+        "total_tokens": None,
+        "prompt_cache_hit_tokens": None,
+        "prompt_cache_miss_tokens": None,
+        "estimated_cost_usd": None,
         "estimated_input_tokens": 0,
         "compaction_event_count": 0,
         "compaction_trigger_counts": {},
@@ -52,7 +60,12 @@ def collect_context_metrics(
 
     metrics = empty_runtime_metrics()
     events = _read_jsonl(transcript_path)
-    assistant_events = [event for event in events if event.get("type") == "assistant_message"]
+    assistant_events = [
+        event
+        for event in events
+        if event.get("type") == "assistant_message"
+        and _event_metadata(event).get("finish_reason") not in _LOCAL_ASSISTANT_FINISH_REASONS
+    ]
     resolved_provider_calls = max(int(provider_call_count), len(assistant_events))
     metrics["provider_call_count"] = resolved_provider_calls
 
@@ -83,6 +96,18 @@ def collect_context_metrics(
         metrics["actual_input_tokens"] = sum(int(usage["input_tokens"]) for usage in usages)
         metrics["actual_output_tokens"] = sum(int(usage["output_tokens"]) for usage in usages)
         metrics["actual_total_tokens"] = sum(int(usage["total_tokens"]) for usage in usages)
+        metrics["prompt_tokens"] = metrics["actual_input_tokens"]
+        metrics["completion_tokens"] = metrics["actual_output_tokens"]
+        metrics["total_tokens"] = metrics["actual_total_tokens"]
+        metrics["estimated_cost_usd"] = round(
+            metrics["prompt_tokens"] * 0.14 / 1_000_000
+            + metrics["completion_tokens"] * 0.28 / 1_000_000,
+            9,
+        )
+    if usages and all(isinstance(usage.get("prompt_cache_hit_tokens"), int) for usage in usages):
+        metrics["prompt_cache_hit_tokens"] = sum(int(usage["prompt_cache_hit_tokens"]) for usage in usages)
+    if usages and all(isinstance(usage.get("prompt_cache_miss_tokens"), int) for usage in usages):
+        metrics["prompt_cache_miss_tokens"] = sum(int(usage["prompt_cache_miss_tokens"]) for usage in usages)
 
     metrics["estimated_input_tokens"] = _estimate_provider_input_tokens(events)
 
@@ -123,6 +148,47 @@ def collect_diff_metrics(diff: str) -> dict[str, int]:
         "diff_file_count": len(files),
         "diff_added_lines": added,
         "diff_deleted_lines": deleted,
+    }
+
+
+def collect_benchmark_policy_metrics(
+    *, transcript_path: str | Path | None, relevant_files: list[str] | tuple[str, ...]
+) -> dict[str, Any]:
+    """Derive retrieval hit and read-before-mutation policy from append-only tool results."""
+
+    events = _read_jsonl(transcript_path)
+    read_seen = False
+    mutation_seen = False
+    violation = False
+    code_search_seen = False
+    relevant = set(relevant_files)
+    hit = False
+    for event in events:
+        if event.get("type") != "tool_result":
+            continue
+        for part in _event_parts(event):
+            metadata = _mapping(part.get("metadata"))
+            if metadata.get("ok") is False:
+                continue
+            tool_name = str(metadata.get("tool_name") or "")
+            if tool_name in _SOURCE_READ_TOOLS:
+                read_seen = True
+            elif tool_name in _MUTATION_TOOLS:
+                mutation_seen = True
+                violation = violation or not read_seen
+            elif tool_name == "code_search":
+                code_search_seen = True
+                hits = _mapping(metadata.get("data")).get("hits")
+                if isinstance(hits, list):
+                    paths = {
+                        str(item.get("path"))
+                        for item in hits[:5]
+                        if isinstance(item, dict) and item.get("path")
+                    }
+                    hit = hit or bool(relevant.intersection(paths))
+    return {
+        "source_read_policy_violation": violation or (mutation_seen and not read_seen),
+        "relevant_file_hit_at_5": hit if code_search_seen else None,
     }
 
 

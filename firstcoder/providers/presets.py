@@ -25,6 +25,7 @@ class ProviderPreset:
     capabilities: ProviderCapabilities = OPENAI_COMPATIBLE_CAPABILITIES
     extra_headers: dict[str, str] | None = None
     extra_body: dict[str, Any] | None = None
+    default_max_tokens: int | None = None
 
 
 # 这里优先覆盖对 coding agent 学习项目最常见的几类接入方式。
@@ -42,9 +43,12 @@ PROVIDER_PRESETS: dict[str, ProviderPreset] = {
         kind="openai-compatible",
         api_key_env="DEEPSEEK_API_KEY",
         model_env="DEEPSEEK_MODEL",
-        default_model="deepseek-chat",
+        default_model="deepseek-v4-flash",
         base_url_env="DEEPSEEK_BASE_URL",
         default_base_url="https://api.deepseek.com",
+        extra_body={"thinking": {"type": "disabled"}},
+        default_max_tokens=4096,
+        capabilities=ProviderCapabilities(supports_streaming=True, supports_stream_usage=True),
     ),
     "qwen": ProviderPreset(
         name="qwen",

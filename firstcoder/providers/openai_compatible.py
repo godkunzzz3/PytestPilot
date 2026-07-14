@@ -78,6 +78,7 @@ class OpenAICompatibleProvider(ChatProvider):
         capabilities: ProviderCapabilities | None = None,
         extra_headers: dict[str, str] | None = None,
         extra_body: dict[str, Any] | None = None,
+        default_max_tokens: int | None = None,
         client: Any | None = None,
     ) -> None:
         self._name = name
@@ -86,6 +87,7 @@ class OpenAICompatibleProvider(ChatProvider):
         self._capabilities = capabilities or ProviderCapabilities(supports_streaming=True)
         self._extra_headers = dict(extra_headers or {})
         self._extra_body = dict(extra_body or {})
+        self._default_max_tokens = default_max_tokens
 
         # 允许测试或上层代码注入 client；没有注入时才创建真实 SDK client。
         if client is not None:
@@ -123,6 +125,10 @@ class OpenAICompatibleProvider(ChatProvider):
     @property
     def extra_body(self) -> dict[str, Any]:
         return dict(self._extra_body)
+
+    @property
+    def default_max_tokens(self) -> int | None:
+        return self._default_max_tokens
 
     def complete(self, request: ChatRequest) -> ChatResponse:
         """调用 Chat Completions，并转换成项目内部统一响应。"""
@@ -172,12 +178,15 @@ class OpenAICompatibleProvider(ChatProvider):
 
         params = self._build_completion_params(request)
         params["stream"] = True
+        if self._capabilities.supports_stream_usage:
+            params["stream_options"] = {"include_usage": True}
         diagnostics = ProviderDiagnostics()
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
         tool_accumulators: dict[int, _StreamToolCallAccumulator] = {}
         raw_finish_reason: Any = None
         response_model = self._model
+        usage: TokenUsage | None = None
 
         try:
             stream = await asyncio.to_thread(self._client.chat.completions.create, **params)
@@ -207,6 +216,9 @@ class OpenAICompatibleProvider(ChatProvider):
                     raise stream_error
 
                 response_model = _read_field(chunk, "model", response_model) or response_model
+                chunk_usage = _parse_usage(_read_field(chunk, "usage"))
+                if chunk_usage is not None:
+                    usage = chunk_usage
                 choices = _read_field(chunk, "choices", []) or []
                 if not choices:
                     continue
@@ -270,6 +282,7 @@ class OpenAICompatibleProvider(ChatProvider):
             content="".join(content_parts),
             tool_calls=tool_calls,
             finish_reason=finish_reason,
+            usage=usage,
             diagnostics=diagnostics,
         )
         yield ChatStreamEvent(kind="message_completed", response=response, diagnostics=diagnostics)
@@ -299,8 +312,9 @@ class OpenAICompatibleProvider(ChatProvider):
                 params["parallel_tool_calls"] = True
         if request.temperature is not None:
             params["temperature"] = request.temperature
-        if request.max_tokens is not None:
-            params[self._capabilities.token_param] = request.max_tokens
+        max_tokens = request.max_tokens if request.max_tokens is not None else self._default_max_tokens
+        if max_tokens is not None:
+            params[self._capabilities.token_param] = max_tokens
 
         extra_body = {**self._extra_body, **request.extra_body}
         if extra_body:
@@ -392,6 +406,8 @@ def _parse_usage(usage: Any) -> TokenUsage | None:
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         total_tokens=total_tokens,
+        prompt_cache_hit_tokens=_read_field(usage, "prompt_cache_hit_tokens"),
+        prompt_cache_miss_tokens=_read_field(usage, "prompt_cache_miss_tokens"),
     )
 
 

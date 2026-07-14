@@ -107,5 +107,5 @@
 - Fake Provider 工作流已覆盖 `view → edit → focused pytest → full pytest`；所有 Provider 自动重试设为 0。
 - 本地缓存 `BAAI/bge-small-en-v1.5`（384 维）与临时 Qdrant 已验证。`parser_dispatch` 的 deterministic baseline Relevant-file Hit@5 为 false，vector 为 true；索引 0.038659 秒，查询 0.003597 秒。
 - `service_repository_contract` 的两种模式 Relevant-file Hit@5 均为 true；vector 索引 0.033658 秒，查询 0.006848 秒。
-- 上述数据是本地检索评估，不是模型修复通过率。真实百炼额度耗尽，因此未运行真实 Smoke Test、真实模型 Benchmark，也没有可报告的真实模型 pass rate 或 token usage。
+- 百炼仍未恢复；2026-07-14 另使用 DeepSeek 官方 API、`deepseek-v4-flash`、thinking disabled 完成真实验证。最终 Smoke 7/7 通过；9 题 baseline 7/9，9 题 vector-enabled 8/9，累计保守估算成本 `$0.23979872`。Vector 组没有实际调用 `code_search`，因此通过率差不能归因于向量检索，Agent-level Hit@5 为 `null`。
 - 阶段 G 最终完整测试：`.venv/bin/python -m pytest tests -q` 在隔离 Provider 环境下得到 853 passed、2 skipped、0 failed（36.26 秒）；另行启用缓存 FastEmbed 集成测试得到 1 passed（0.67 秒）。

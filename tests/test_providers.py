@@ -624,6 +624,53 @@ def test_openai_compatible_provider_uses_capability_token_param_and_extra_body()
     assert client.completions.last_params["extra_body"] == {"preset": True, "request": True}
 
 
+def test_openai_compatible_provider_applies_default_max_tokens_and_nested_extra_body():
+    client = _FakeOpenAIClient()
+    provider = OpenAICompatibleProvider(
+        name="deepseek",
+        model="deepseek-v4-flash",
+        api_key="not-recorded",
+        client=client,
+        default_max_tokens=4096,
+        extra_body={"thinking": {"type": "disabled"}},
+    )
+
+    provider.complete(ChatRequest(messages=[ChatMessage(role="user", content="hi")]))
+
+    assert client.completions.last_params["max_tokens"] == 4096
+    assert client.completions.last_params["extra_body"] == {"thinking": {"type": "disabled"}}
+
+
+def test_openai_compatible_provider_parses_deepseek_cache_usage_fields():
+    class CacheUsageCompletions(_FakeOpenAICompletions):
+        def create(self, **params):
+            response = super().create(**params)
+            response.usage.prompt_cache_hit_tokens = 9
+            response.usage.prompt_cache_miss_tokens = 2
+            return response
+
+    client = _Object(chat=_Object(completions=CacheUsageCompletions()))
+    provider = OpenAICompatibleProvider(name="deepseek", model="deepseek-v4-flash", api_key="x", client=client)
+
+    response = provider.complete(ChatRequest(messages=[ChatMessage(role="user", content="hi")]))
+
+    assert response.usage is not None
+    assert response.usage.prompt_cache_hit_tokens == 9
+    assert response.usage.prompt_cache_miss_tokens == 2
+
+
+def test_openai_compatible_provider_keeps_missing_cache_usage_fields_null():
+    provider = OpenAICompatibleProvider(
+        name="test", model="test", api_key="x", client=_FakeOpenAIClient()
+    )
+
+    response = provider.complete(ChatRequest(messages=[ChatMessage(role="user", content="hi")]))
+
+    assert response.usage is not None
+    assert response.usage.prompt_cache_hit_tokens is None
+    assert response.usage.prompt_cache_miss_tokens is None
+
+
 def test_openai_compatible_provider_sends_parallel_tool_calls_when_supported():
     client = _FakeOpenAIClient()
     provider = OpenAICompatibleProvider(
@@ -823,6 +870,60 @@ def test_openai_compatible_provider_streams_text_deltas_and_final_response():
     assert events[-1].response is not None
     assert events[-1].response.content == "你好"
     assert events[-1].response.finish_reason == "stop"
+
+
+def test_openai_compatible_provider_keeps_stream_usage_only_chunk():
+    class UsageStreamCompletions:
+        def __init__(self):
+            self.last_params = None
+
+        def create(self, **params):
+            self.last_params = params
+            return iter(
+                [
+                    _Object(
+                        model=params["model"],
+                        choices=[_Object(delta=_Object(content="ok"), finish_reason="stop")],
+                    ),
+                    _Object(
+                        model=params["model"],
+                        choices=[],
+                        usage=_Object(
+                            prompt_tokens=13,
+                            completion_tokens=2,
+                            total_tokens=15,
+                            prompt_cache_hit_tokens=8,
+                            prompt_cache_miss_tokens=5,
+                        ),
+                    ),
+                ]
+            )
+
+    async def collect():
+        completions = UsageStreamCompletions()
+        provider = OpenAICompatibleProvider(
+            name="deepseek",
+            model="deepseek-v4-flash",
+            api_key="x",
+            client=_Object(chat=_Object(completions=completions)),
+            capabilities=ProviderCapabilities(supports_streaming=True, supports_stream_usage=True),
+        )
+        events = [
+            event
+            async for event in provider.astream(ChatRequest(messages=[ChatMessage(role="user", content="hi")]))
+        ]
+        return completions, events
+
+    completions, events = asyncio.run(collect())
+    response = events[-1].response
+
+    assert completions.last_params["stream_options"] == {"include_usage": True}
+    assert response is not None and response.usage is not None
+    assert response.usage.input_tokens == 13
+    assert response.usage.output_tokens == 2
+    assert response.usage.total_tokens == 15
+    assert response.usage.prompt_cache_hit_tokens == 8
+    assert response.usage.prompt_cache_miss_tokens == 5
 
 
 def test_openai_compatible_provider_streams_reasoning_deltas_into_diagnostics():

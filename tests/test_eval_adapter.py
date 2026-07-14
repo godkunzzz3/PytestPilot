@@ -7,7 +7,7 @@ import pytest
 from firstcoder.agent.loop_limits import AgentLoopLimits
 from firstcoder.eval.adapter import FirstCoderCodingAgentAdapter
 from firstcoder.eval.adapter import RetryableBenchmarkProvider
-from firstcoder.eval.metrics import collect_context_metrics
+from firstcoder.eval.metrics import collect_benchmark_policy_metrics, collect_context_metrics
 from firstcoder.providers.base import ChatProvider
 from firstcoder.eval.tasks import CodingTask
 from firstcoder.context.events import SessionEvent
@@ -117,6 +117,43 @@ class FlakyProvider(ChatProvider):
         return ChatResponse(provider=self.name, model=self.model, content="done", finish_reason="stop")
 
 
+def test_benchmark_policy_metrics_track_vector_hit_and_mutation_before_read(tmp_path: Path) -> None:
+    transcript = tmp_path / "session.jsonl"
+    events = [
+        {
+            "type": "tool_result",
+            "payload": {
+                "parts": [
+                    {
+                        "kind": "tool_result",
+                        "metadata": {
+                            "tool_name": "code_search",
+                            "ok": True,
+                            "data": {"hits": [{"path": "src/target.py"}]},
+                        },
+                    }
+                ]
+            },
+        },
+        {
+            "type": "tool_result",
+            "payload": {
+                "parts": [{"kind": "tool_result", "metadata": {"tool_name": "edit", "ok": True}}]
+            },
+        },
+    ]
+    transcript.write_text("\n".join(json.dumps(event) for event in events), encoding="utf-8")
+
+    metrics = collect_benchmark_policy_metrics(
+        transcript_path=transcript, relevant_files=["src/target.py"]
+    )
+
+    assert metrics == {
+        "source_read_policy_violation": True,
+        "relevant_file_hit_at_5": True,
+    }
+
+
 def init_repo(repo: Path) -> None:
     subprocess.run(["git", "init"], cwd=repo, check=True, text=True, capture_output=True)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
@@ -205,6 +242,23 @@ def test_default_loop_factory_uses_custom_limits(tmp_path: Path):
     assert loop.limits == limits
 
 
+def test_default_loop_factory_registers_task_specific_extra_tools(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    init_repo(repo)
+    seen: list[str] = []
+    adapter = FirstCoderCodingAgentAdapter(
+        session_root=tmp_path / "sessions",
+        provider_factory=lambda provider_name: FakeProvider(),
+        extra_tools_factory=lambda task: seen.append(task.instance_id) or [],
+    )
+    task = CodingTask(instance_id="task-tools", repo_path=repo, problem_statement="Fix it.")
+
+    adapter._create_loop(task, tmp_path / "sessions" / task.instance_id)
+
+    assert seen == ["task-tools"]
+
+
 def test_default_loop_factory_wraps_provider_with_benchmark_retries(tmp_path: Path):
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -222,6 +276,23 @@ def test_default_loop_factory_wraps_provider_with_benchmark_retries(tmp_path: Pa
     loop = adapter._create_loop(task, tmp_path / "sessions" / task.instance_id)
 
     assert isinstance(loop.provider, RetryableBenchmarkProvider)
+
+
+def test_default_loop_factory_does_not_wrap_provider_when_retries_are_zero(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    init_repo(repo)
+    provider = FakeProvider()
+    adapter = FirstCoderCodingAgentAdapter(
+        session_root=tmp_path / "sessions",
+        provider_retries=0,
+        provider_factory=lambda provider_name: provider,
+    )
+    task = CodingTask(instance_id="no-retry", repo_path=repo, problem_statement="Fix it.")
+
+    loop = adapter._create_loop(task, tmp_path / "sessions" / task.instance_id)
+
+    assert loop.provider is provider
 
 
 def test_retryable_benchmark_provider_retries_transient_errors() -> None:
@@ -543,3 +614,45 @@ def test_collect_context_metrics_keeps_missing_actual_usage_null(tmp_path: Path)
     assert metrics["actual_output_tokens"] is None
     assert metrics["actual_total_tokens"] is None
     assert metrics["estimated_input_tokens"] == 0
+
+
+def test_collect_context_metrics_excludes_local_tool_limit_response_from_usage_coverage(tmp_path: Path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session_id = "sess_tool_limit"
+    store.append_event(
+        SessionEvent(
+            id="provider_response",
+            session_id=session_id,
+            type="assistant_message",
+            payload={
+                "message_id": "assistant_provider",
+                "metadata": {
+                    "finish_reason": "tool_calls",
+                    "usage": {"input_tokens": 100, "output_tokens": 10, "total_tokens": 110},
+                },
+                "parts": [],
+            },
+        )
+    )
+    store.append_event(
+        SessionEvent(
+            id="local_stop",
+            session_id=session_id,
+            type="assistant_message",
+            payload={
+                "message_id": "assistant_local",
+                "metadata": {"finish_reason": "tool_round_limit", "usage": None},
+                "parts": [{"kind": "text", "content": "stopped"}],
+            },
+        )
+    )
+
+    metrics = collect_context_metrics(
+        transcript_path=tmp_path / "sessions" / f"{session_id}.jsonl",
+        provider_call_count=1,
+    )
+
+    assert metrics["provider_call_count"] == 1
+    assert metrics["prompt_tokens"] == 100
+    assert metrics["completion_tokens"] == 10
+    assert metrics["estimated_cost_usd"] == 0.0000168

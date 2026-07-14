@@ -77,9 +77,12 @@ def test_create_provider_from_config_uses_preset_values():
 
     assert isinstance(provider, OpenAICompatibleProvider)
     assert provider.name == "deepseek"
-    assert provider.model == "deepseek-chat"
+    assert provider.model == "deepseek-v4-flash"
     assert provider.base_url == "https://api.deepseek.com"
+    assert provider.extra_body == {"thinking": {"type": "disabled"}}
+    assert provider.default_max_tokens == 4096
     assert provider.capabilities.supports_tools is True
+    assert provider.capabilities.supports_stream_usage is True
 
 
 def test_create_provider_from_config_reports_missing_api_key():

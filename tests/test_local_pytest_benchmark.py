@@ -89,6 +89,15 @@ def test_parser_defaults_to_sample_tasks():
 
     assert args.tasks == "benchmark/local_pytest/tasks.sample.jsonl"
     assert args.max_tasks is None
+    assert args.task_id == []
+
+
+def test_parser_accepts_repeatable_task_ids():
+    args = build_parser().parse_args(
+        ["--workdir", "runs/local-pytest", "--task-id", "one", "--task-id", "two"]
+    )
+
+    assert args.task_id == ["one", "two"]
 
 
 def test_run_tasks_scores_agent_changes_and_writes_summary(tmp_path: Path):
@@ -264,3 +273,38 @@ def test_baseline_and_vector_candidate_modes_use_same_failure_and_vector_hits_se
     assert comparison["vector"]["relevant_file_hit_at_5"] is True
     assert comparison["vector"]["query_latency_seconds"] >= 0
     json.dumps(comparison)
+
+
+def test_runner_stops_and_persists_when_cost_limit_is_reached(tmp_path: Path) -> None:
+    class CostingAdapter:
+        def run_task(self, task: CodingTask) -> CodingTaskResult:
+            return CodingTaskResult(
+                instance_id=task.instance_id,
+                model_name_or_path="fake",
+                model_patch="",
+                runtime_metrics={"estimated_cost_usd": 0.6},
+            )
+
+    tasks = [
+        LocalPytestTask(
+            id=f"cost-{index}",
+            title="Cost",
+            files={"tests/test_fail.py": "def test_fail():\n    assert False\n"},
+            problem_statement="Do not fix.",
+        )
+        for index in range(3)
+    ]
+    summary = tmp_path / "summary.json"
+
+    rows = run_tasks(
+        tasks=tasks,
+        workdir=tmp_path / "work",
+        summary_out=summary,
+        adapter=CostingAdapter(),
+        cost_limit_usd=1.0,
+    )
+
+    assert len(rows) == 2
+    assert rows[-1]["cumulative_estimated_cost_usd"] == 1.2
+    assert rows[-1]["budget_stop_reason"] == "cost_limit_reached"
+    assert json.loads(summary.read_text(encoding="utf-8")) == rows

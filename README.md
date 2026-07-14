@@ -194,22 +194,24 @@ Install the optional local-retrieval dependencies, then build the persistent ind
 
 ```sh
 .venv/bin/python -m pip install -e ".[dev,retrieval]"
-.venv/bin/python -m firstcoder.cli index build --project .
-.venv/bin/python -m firstcoder.cli index status --project .
+.venv/bin/firstcoder index build --project .
+.venv/bin/firstcoder index status --project .
 # Use this after changing the embedding model or dimension:
-.venv/bin/python -m firstcoder.cli index rebuild --project .
+.venv/bin/firstcoder index rebuild --project .
 ```
 
 Run the repair workflow after configuring an available provider:
 
 ```sh
-.venv/bin/python -m firstcoder.cli pytest-fix \
+.venv/bin/firstcoder pytest-fix \
   --project . \
   --test-command ".venv/bin/python -m pytest tests/test_example.py -q" \
   --json-out runs/pytest-fix-result.json
 ```
 
 The command performs at most two repair attempts by default and never retries a Provider request. If a local index is unavailable, structured pytest parsing and deterministic source candidates continue to work. Vector results are candidates only; the agent must read current source before editing it.
+
+The DeepSeek preset uses the official OpenAI-compatible endpoint, reads credentials only from `DEEPSEEK_API_KEY`, and defaults to `deepseek-v4-flash` with thinking disabled and a 4096-token output cap. Thinking-mode tool calling and `reasoning_content` round-trip are intentionally deferred.
 
 The reproducible benchmark contains nine tasks. Its evaluator confirms the initial failure, rejects test edits and out-of-scope writes, and records Provider/Tool counts, actual usage (or `null`), estimated input tokens, context/archive metrics, elapsed time, final diff, and transcript path. Offline tests use Fake Provider, Fake Embedding, and Fake Vector Store:
 
