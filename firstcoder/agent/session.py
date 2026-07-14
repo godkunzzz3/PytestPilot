@@ -33,7 +33,7 @@ from firstcoder.tools.session_registry import ToolRegistryLike, create_session_t
 from firstcoder.tools.types import Tool, ToolResult
 from firstcoder.context.models import AgentMessage, MessagePart
 from firstcoder.utils.sandbox_access import SandboxAccess, SandboxAccessMode
-from firstcoder.skills.discovery import discover_all_skills
+from firstcoder.skills.discovery import discover_all_skills, discover_project_skills
 from firstcoder.skills.models import LoadedSkill, SkillCatalog
 from firstcoder.skills.session import replay_loaded_skills
 
@@ -147,6 +147,8 @@ class AgentSession:
         tools: list[Tool] | None = None,
         permission_manager: PermissionManager | None = None,
         sandbox_access: SandboxAccess | None = None,
+        load_skills: bool = True,
+        skill_allowlist: tuple[str, ...] | None = None,
     ) -> "AgentSession":
         """从项目根目录创建 session。
 
@@ -155,7 +157,21 @@ class AgentSession:
         """
 
         agents_md = read_agents_md(project_root)
-        skill_catalog = discover_all_skills(project_root)
+        if not load_skills:
+            skill_catalog = SkillCatalog()
+        elif skill_allowlist is None:
+            skill_catalog = discover_all_skills(project_root)
+        else:
+            project_catalog = discover_project_skills(project_root)
+            allowed = set(skill_allowlist)
+            skill_catalog = SkillCatalog(
+                skills=[
+                    skill
+                    for skill in project_catalog.skills
+                    if skill.name in allowed or skill.path in allowed
+                ],
+                index_content=project_catalog.index_content,
+            )
         permission_manager = permission_manager or create_project_permission_manager(
             project_root,
             grants=FilePermissionGrantStore(store.root / "permissions.json"),

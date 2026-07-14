@@ -141,3 +141,33 @@ def test_registry_returns_error_for_unknown_tool():
 
     assert result.ok is False
     assert result.error == "未知工具：missing_tool"
+
+
+def test_tree_excludes_heavy_and_hidden_directories_by_default(tmp_path):
+    for directory in (".git", ".venv", "node_modules", "build", "dist", ".firstcoder", "qdrant_storage"):
+        path = tmp_path / directory
+        path.mkdir()
+        (path / "secret.txt").write_text("x", encoding="utf-8")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+
+    result = create_tree_tool(tmp_path).executor()
+
+    assert result.ok is True
+    assert "src/app.py" in result.content
+    assert "secret.txt" not in result.content
+    assert result.data["excluded_entries"] >= 7
+
+
+def test_tree_hidden_toggle_and_output_limits_are_explicit(tmp_path):
+    (tmp_path / ".visible-on-request").mkdir()
+    (tmp_path / ".visible-on-request" / "file.txt").write_text("x", encoding="utf-8")
+    for index in range(20):
+        (tmp_path / f"file_{index:02}.txt").write_text("x", encoding="utf-8")
+
+    hidden = create_tree_tool(tmp_path).executor(include_hidden=True, max_entries=50, max_output_chars=2000)
+    limited = create_tree_tool(tmp_path).executor(max_entries=3, max_output_chars=40)
+
+    assert ".visible-on-request/file.txt" in hidden.content
+    assert limited.data["truncated"] is True
+    assert len(limited.content) <= 40

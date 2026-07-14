@@ -35,6 +35,7 @@ def create_builtin_registry(
     include_mutation_tools: bool = False,
     include_execution_tools: bool = False,
     include_network_tools: bool = False,
+    include_interactive_tools: bool = True,
     access: SandboxAccess | None = None,
 ) -> ToolRegistry:
     """创建第一阶段默认可用工具。
@@ -54,9 +55,10 @@ def create_builtin_registry(
         create_diagnostics_tool(root, access=access),
         create_think_tool(),
         create_read_multi_tool(root, access=access),
-        create_ask_user_tool(),
         create_todo_tool(),
     ]
+    if include_interactive_tools:
+        tools.insert(-1, create_ask_user_tool())
     if include_mutation_tools:
         tools.extend(
             [

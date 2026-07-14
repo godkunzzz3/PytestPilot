@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+
 from firstcoder.utils import git as git_utils
 from firstcoder.tools import diagnostics as diagnostics_module
 from firstcoder.tools import python_exec as python_exec_module
@@ -148,3 +152,90 @@ def test_diagnostics_runs_pytest(monkeypatch, tmp_path):
     assert result.ok is True
     assert result.content == "ok"
     assert result.data["command"] == "python -m pytest -q"
+
+
+def test_diagnostics_returns_structured_pytest_evidence_on_failure(monkeypatch, tmp_path):
+    output = """============================= test session starts =============================
+_______________________________ test_total ________________________________
+tests/test_math.py:8: in test_total
+    assert total == 4
+E   assert 3 == 4
+=========================== short test summary info ============================
+FAILED tests/test_math.py::test_total - assert 3 == 4
+============================== 1 failed in 0.02s ===============================
+"""
+
+    def fake_run(command, **kwargs):
+        return diagnostics_module.subprocess.CompletedProcess(command, 1, output, "")
+
+    monkeypatch.setattr(diagnostics_module.subprocess, "run", fake_run)
+    result = create_diagnostics_tool(tmp_path).executor(command="python -m pytest -q")
+
+    assert result.ok is False
+    evidence = result.data["pytest_evidence"]
+    assert evidence["failed_count"] == 1
+    assert evidence["failures"][0]["node_id"] == "tests/test_math.py::test_total"
+    assert evidence["failures"][0]["expected"] == "4"
+    assert evidence["failures"][0]["actual"] == "3"
+    assert evidence["failures"][0]["fingerprint"]
+    assert result.data["output_tail"].endswith("1 failed in 0.02s ===============================")
+
+
+def test_diagnostics_marks_malformed_pytest_output_unparsed(monkeypatch, tmp_path):
+    def fake_run(command, **kwargs):
+        return diagnostics_module.subprocess.CompletedProcess(command, 2, "plugin exploded", "")
+
+    monkeypatch.setattr(diagnostics_module.subprocess, "run", fake_run)
+    result = create_diagnostics_tool(tmp_path).executor()
+
+    assert result.ok is False
+    assert result.data["pytest_evidence"]["status"] == "unknown"
+    assert result.data["pytest_evidence"]["unparsed"] is True
+
+
+@pytest.mark.parametrize(
+    ("fixture_name", "expected_phase"),
+    [
+        ("collection_import.txt", "collection"),
+        ("setup_teardown.txt", "setup"),
+    ],
+)
+def test_diagnostics_preserves_collection_and_setup_evidence(
+    monkeypatch, tmp_path, fixture_name, expected_phase
+):
+    output = (Path(__file__).parent / "fixtures" / "pytest_logs" / fixture_name).read_text(encoding="utf-8")
+
+    def fake_run(command, **kwargs):
+        return diagnostics_module.subprocess.CompletedProcess(command, 1, output, "")
+
+    monkeypatch.setattr(diagnostics_module.subprocess, "run", fake_run)
+    result = create_diagnostics_tool(tmp_path).executor()
+
+    assert result.ok is False
+    assert any(failure["phase"] == expected_phase for failure in result.data["pytest_evidence"]["failures"])
+
+
+def test_diagnostics_preserves_multiple_failures(monkeypatch, tmp_path):
+    output = (Path(__file__).parent / "fixtures" / "pytest_logs" / "multi_failure.txt").read_text(encoding="utf-8")
+
+    def fake_run(command, **kwargs):
+        return diagnostics_module.subprocess.CompletedProcess(command, 1, output, "")
+
+    monkeypatch.setattr(diagnostics_module.subprocess, "run", fake_run)
+    result = create_diagnostics_tool(tmp_path).executor()
+
+    assert result.data["pytest_evidence"]["failed_count"] >= 2
+    assert len(result.data["pytest_evidence"]["failures"]) >= 2
+
+
+def test_diagnostics_timeout_is_bounded_and_unparsed(monkeypatch, tmp_path):
+    def fake_run(command, **kwargs):
+        raise diagnostics_module.subprocess.TimeoutExpired(command, timeout=1)
+
+    monkeypatch.setattr(diagnostics_module.subprocess, "run", fake_run)
+    result = create_diagnostics_tool(tmp_path).executor(timeout_seconds=1)
+
+    assert result.ok is False
+    assert result.error == "命令执行超时"
+    assert result.data["pytest_evidence"]["unparsed"] is True
+    assert result.data["output_tail"] == ""
