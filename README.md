@@ -75,7 +75,7 @@ python -m venv .venv
 
 ## 离线验证
 
-单元测试和集成测试使用 Fake Provider；CI 仅安装 `.[dev]`，不会下载 FastEmbed 模型、打开 Qdrant 数据库或发起真实 Provider 请求。
+单元测试和集成测试使用 Fake Provider；CI 安装 `.[dev,retrieval]` 以运行临时 Qdrant local 持久化测试，但不启用 FastEmbed 模型集成门禁，因此不会下载模型或发起真实 Provider 请求。
 
 ```sh
 # Fake Provider 修复闭环
