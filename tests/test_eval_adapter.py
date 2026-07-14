@@ -151,7 +151,86 @@ def test_benchmark_policy_metrics_track_vector_hit_and_mutation_before_read(tmp_
     assert metrics == {
         "source_read_policy_violation": True,
         "relevant_file_hit_at_5": True,
+        "unread_edited_paths": [],
+        "stale_read_paths": [],
+        "new_files": [],
+        "out_of_scope_paths": [],
+        "code_search_call_count": 1,
+        "retrieval_candidate_read_count": 0,
+        "retrieval_policy_violation": False,
     }
+
+
+def test_benchmark_policy_is_path_aware_and_requires_vector_hit_read(tmp_path: Path) -> None:
+    transcript = tmp_path / "session.jsonl"
+
+    def event(tool_name: str, data: dict[str, object]) -> dict[str, object]:
+        return {
+            "type": "tool_result",
+            "payload": {
+                "parts": [
+                    {
+                        "kind": "tool_result",
+                        "metadata": {"tool_name": tool_name, "ok": True, "data": data},
+                    }
+                ]
+            },
+        }
+
+    events = [
+        event("code_search", {"hits": [{"path": "./SRC/target.py"}]}),
+        event("read_multi", {"files": [{"path": "src/target.py"}, {"path": "src/helper.py"}]}),
+        event("apply_patch", {"changed_files": ["src/target.py", "src/unread.py", "src/new.py"]}),
+    ]
+    transcript.write_text("\n".join(json.dumps(item) for item in events), encoding="utf-8")
+
+    metrics = collect_benchmark_policy_metrics(
+        transcript_path=transcript,
+        relevant_files=["src/target.py"],
+        existing_paths=["src/target.py", "src/helper.py", "src/unread.py"],
+        editable_paths=["src/target.py", "src/helper.py", "src/unread.py", "src/new.py"],
+        retrieval_required=True,
+        retrieval_mode="vector",
+    )
+
+    assert metrics["source_read_policy_violation"] is True
+    assert metrics["unread_edited_paths"] == ["src/unread.py"]
+    assert metrics["new_files"] == ["src/new.py"]
+    assert metrics["out_of_scope_paths"] == []
+    assert metrics["code_search_call_count"] == 1
+    assert metrics["retrieval_candidate_read_count"] == 1
+    assert metrics["retrieval_policy_violation"] is False
+
+
+def test_vector_retrieval_required_fails_if_search_or_hit_read_is_late(tmp_path: Path) -> None:
+    transcript = tmp_path / "session.jsonl"
+    events = [
+        {
+            "type": "tool_result",
+            "payload": {"parts": [{"kind": "tool_result", "metadata": {
+                "tool_name": "edit", "ok": True, "data": {"path": "src/target.py"}
+            }}]},
+        },
+        {
+            "type": "tool_result",
+            "payload": {"parts": [{"kind": "tool_result", "metadata": {
+                "tool_name": "code_search", "ok": True, "data": {"hits": [{"path": "src/target.py"}]}
+            }}]},
+        },
+    ]
+    transcript.write_text("\n".join(json.dumps(item) for item in events), encoding="utf-8")
+
+    metrics = collect_benchmark_policy_metrics(
+        transcript_path=transcript,
+        relevant_files=["src/target.py"],
+        existing_paths=["src/target.py"],
+        editable_paths=["src/target.py"],
+        retrieval_required=True,
+        retrieval_mode="vector",
+    )
+
+    assert metrics["retrieval_policy_violation"] is True
+    assert metrics["retrieval_candidate_read_count"] == 0
 
 
 def init_repo(repo: Path) -> None:
@@ -210,6 +289,8 @@ def test_default_loop_factory_keeps_session_outside_repo(tmp_path: Path):
     assert repo not in loop.session.store.root.parents
     assert loop.session.mode == "bypass"
     assert "write" in loop.session.tool_registry.names()
+    assert "ask_user" not in loop.session.tool_registry.names()
+    assert loop.session.skill_catalog.skills == []
     assert loop.limits == AgentLoopLimits.swe_lite()
     message_id = loop.session.append_user_message("benchmark task")
     result = loop.session.tool_registry.execute(
@@ -293,6 +374,91 @@ def test_default_loop_factory_does_not_wrap_provider_when_retries_are_zero(tmp_p
     loop = adapter._create_loop(task, tmp_path / "sessions" / task.instance_id)
 
     assert loop.provider is provider
+
+
+def test_zero_retry_benchmark_calls_failing_provider_once(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    init_repo(repo)
+    provider = FlakyProvider(failures=2)
+    adapter = FirstCoderCodingAgentAdapter(
+        session_root=tmp_path / "sessions",
+        provider_retries=0,
+        provider_factory=lambda provider_name: provider,
+    )
+    task = CodingTask(instance_id="no-hidden-retry", repo_path=repo, problem_statement="Fix it.")
+    loop = adapter._create_loop(task, tmp_path / "sessions" / task.instance_id)
+
+    with pytest.raises(ProviderError):
+        loop.provider.complete(ChatRequest(messages=[]))
+
+    assert provider.calls == 1
+
+
+def test_benchmark_project_skill_allowlist_excludes_unrelated_skills_and_records_loaded_id(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    init_repo(repo)
+    for name in ("pytest-ci-repair", "nature-paper2ppt"):
+        skill_dir = repo / ".agents" / "skills" / name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: {name} workflow\n---\n# {name}\n",
+            encoding="utf-8",
+        )
+    adapter = FirstCoderCodingAgentAdapter(
+        session_root=tmp_path / "sessions",
+        provider_retries=0,
+        provider_factory=lambda provider_name: FakeProvider(),
+        benchmark_skill_allowlist=("pytest-ci-repair",),
+    )
+    task = CodingTask(
+        instance_id="skill-audit",
+        repo_path=repo,
+        problem_statement="Use pytest-ci-repair to inspect this pytest task.",
+    )
+
+    result = adapter.run_task(task)
+
+    assert result.runtime_metrics["loaded_skill_ids"] == ["pytest-ci-repair"]
+    transcript = result.transcript_path.read_text(encoding="utf-8")
+    assert "nature-paper2ppt" not in transcript
+
+
+def test_benchmark_prompt_is_identical_across_retrieval_modes(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    init_repo(repo)
+    baseline_loop = FakeLoop()
+    vector_loop = FakeLoop()
+    common = {
+        "retrieval_required": True,
+        "existing_paths": ["src/service.py"],
+        "editable_paths": ["src/service.py"],
+    }
+    baseline_task = CodingTask(
+        instance_id="paired",
+        repo_path=repo,
+        problem_statement="Fix it.",
+        metadata={**common, "retrieval_mode": "baseline"},
+    )
+    vector_task = CodingTask(
+        instance_id="paired",
+        repo_path=repo,
+        problem_statement="Fix it.",
+        metadata={**common, "retrieval_mode": "vector"},
+    )
+
+    FirstCoderCodingAgentAdapter(
+        loop_factory=lambda task, root: baseline_loop,
+        session_root=tmp_path / "baseline-sessions",
+    ).run_task(baseline_task)
+    FirstCoderCodingAgentAdapter(
+        loop_factory=lambda task, root: vector_loop,
+        session_root=tmp_path / "vector-sessions",
+    ).run_task(vector_task)
+
+    assert baseline_loop.messages[0].encode() == vector_loop.messages[0].encode()
 
 
 def test_retryable_benchmark_provider_retries_transient_errors() -> None:

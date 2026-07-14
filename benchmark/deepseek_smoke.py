@@ -12,7 +12,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from firstcoder.eval.costs import CostBudget
+from firstcoder.eval.costs import BudgetedProvider, RequestBoundaryBudget, estimate_deepseek_cost
+from firstcoder.providers.base import ChatProvider
 from firstcoder.providers.factory import create_provider
 from firstcoder.providers.openai_compatible import OpenAICompatibleProvider
 from firstcoder.providers.types import (
@@ -36,16 +37,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--starting-cost-usd", type=float, default=0.0)
     args = parser.parse_args(argv)
     out = Path(args.out)
-    budget = CostBudget(
+    budget = RequestBoundaryBudget(
         limit_usd=args.cost_limit_usd,
-        cumulative_estimated_cost_usd=args.starting_cost_usd,
+        committed_cost_usd=args.starting_cost_usd,
+        default_max_output_tokens=4096,
     )
     results: list[dict[str, Any]] = []
 
-    provider = create_provider("deepseek")
-    if not isinstance(provider, OpenAICompatibleProvider):
+    raw_provider = create_provider("deepseek")
+    if not isinstance(raw_provider, OpenAICompatibleProvider):
         raise RuntimeError("deepseek must use the OpenAI-compatible provider")
-    checks = _provider_checks(provider)
+    checks = _provider_checks(raw_provider)
+    provider = BudgetedProvider(raw_provider, budget)
     _save(out, checks=checks, results=results, budget=budget)
 
     try:
@@ -160,7 +163,8 @@ def _provider_checks(provider: OpenAICompatibleProvider) -> dict[str, Any]:
         "base_url": provider.base_url,
         "thinking_disabled": params.get("extra_body") == THINKING_DISABLED,
         "max_output_tokens": params.get("max_tokens"),
-        "provider_retry": 0,
+        "temperature": params.get("temperature"),
+        "sdk_max_retries": provider.sdk_max_retries,
         "api_key_recorded": False,
         "reasoning_content_round_trip_implemented": False,
     }
@@ -193,7 +197,7 @@ def _tools(only: str | None = None) -> list[ToolDefinition]:
     return [tool for tool in tools if only is None or tool.name == only]
 
 
-async def _stream_text(provider: OpenAICompatibleProvider) -> ChatResponse:
+async def _stream_text(provider: ChatProvider) -> ChatResponse:
     completed: ChatResponse | None = None
     async for event in provider.astream(_text_request("Reply with exactly STREAM_OK.")):
         if event.kind == "message_completed":
@@ -225,12 +229,13 @@ def _require_tool(response: ChatResponse, expected_name: str) -> ToolCall:
 
 def _record(
     results: list[dict[str, Any]],
-    budget: CostBudget,
+    budget: RequestBoundaryBudget,
     name: str,
     response: ChatResponse,
     **checks: Any,
 ) -> None:
-    cost = budget.record(response.usage)
+    cost = estimate_deepseek_cost(response.usage)
+    cost["cumulative_estimated_cost_usd"] = budget.committed_cost_usd
     results.append(
         {
             "name": name,
@@ -244,9 +249,10 @@ def _record(
     )
 
 
-def _require_budget(budget: CostBudget) -> None:
-    if not budget.can_continue:
-        raise RuntimeError("cumulative cost limit reached")
+def _require_budget(budget: RequestBoundaryBudget) -> None:
+    snapshot = budget.snapshot()
+    if snapshot["usage_unknown"] or snapshot["committed_cost_usd"] >= snapshot["limit_usd"]:
+        raise RuntimeError(f"request budget stopped: {snapshot['stop_reason'] or 'cost_limit_reached'}")
 
 
 def _save(
@@ -254,7 +260,7 @@ def _save(
     *,
     checks: dict[str, Any],
     results: list[dict[str, Any]],
-    budget: CostBudget,
+    budget: RequestBoundaryBudget,
     completed: bool = False,
     **extra: Any,
 ) -> None:
@@ -263,19 +269,18 @@ def _save(
         "completed": completed,
         "provider_checks": checks,
         "results": results,
-        "cumulative_estimated_cost_usd": budget.cumulative_estimated_cost_usd,
-        "cost_limit_usd": budget.limit_usd,
+        "request_budget": budget.snapshot(),
         **extra,
     }
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def _summary(checks: dict[str, Any], results: list[dict[str, Any]], budget: CostBudget) -> dict[str, Any]:
+def _summary(checks: dict[str, Any], results: list[dict[str, Any]], budget: RequestBoundaryBudget) -> dict[str, Any]:
     return {
         "provider_checks": checks,
         "smoke_passed": all(row["passed"] and row["usage_present"] for row in results),
         "request_count": len(results),
-        "cumulative_estimated_cost_usd": budget.cumulative_estimated_cost_usd,
+        "cumulative_estimated_cost_usd": budget.committed_cost_usd,
     }
 
 

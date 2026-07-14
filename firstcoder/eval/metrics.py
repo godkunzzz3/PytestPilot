@@ -14,7 +14,7 @@ _MESSAGE_EVENT_TYPES = {"user_message", "assistant_message", "tool_result"}
 _COMPACTION_EVENT_TYPES = {"compaction_completed", "llm_compaction_completed"}
 _SOURCE_READ_TOOLS = {"view", "read_multi"}
 _NON_EXECUTION_REQUEST_TYPES = {"permission_confirmation", "permission_denied"}
-_MUTATION_TOOLS = {"edit", "write", "apply_patch"}
+_MUTATION_TOOLS = {"edit", "write", "delete", "apply_patch"}
 _LOCAL_ASSISTANT_FINISH_REASONS = {"tool_round_limit", "provider_call_limit", "waiting_for_user_input"}
 
 
@@ -42,6 +42,7 @@ def empty_runtime_metrics() -> dict[str, Any]:
         "archive_count": 0,
         "archive_retrieval_count": 0,
         "source_read_count": 0,
+        "loaded_skill_ids": [],
     }
 
 
@@ -125,6 +126,13 @@ def collect_context_metrics(
     metrics["compaction_tokens_before"] = before_tokens
     metrics["compaction_tokens_after"] = after_tokens
     metrics["archive_count"] = len(_collect_archive_ids(events))
+    metrics["loaded_skill_ids"] = sorted(
+        {
+            str(_mapping(event.get("payload")).get("skill_name"))
+            for event in events
+            if event.get("type") == "skill_loaded" and _mapping(event.get("payload")).get("skill_name")
+        }
+    )
     return metrics
 
 
@@ -152,17 +160,31 @@ def collect_diff_metrics(diff: str) -> dict[str, int]:
 
 
 def collect_benchmark_policy_metrics(
-    *, transcript_path: str | Path | None, relevant_files: list[str] | tuple[str, ...]
+    *,
+    transcript_path: str | Path | None,
+    relevant_files: list[str] | tuple[str, ...],
+    existing_paths: list[str] | tuple[str, ...] = (),
+    editable_paths: list[str] | tuple[str, ...] = (),
+    retrieval_required: bool = False,
+    retrieval_mode: str = "baseline",
 ) -> dict[str, Any]:
-    """Derive retrieval hit and read-before-mutation policy from append-only tool results."""
+    """Audit exact source reads and retrieval order from append-only tool results."""
 
     events = _read_jsonl(transcript_path)
-    read_seen = False
+    read_paths: dict[str, str] = {}
+    mutated_paths: dict[str, str] = {}
+    unread_paths: dict[str, str] = {}
+    candidates: dict[str, str] = {}
+    candidate_reads: set[str] = set()
     mutation_seen = False
-    violation = False
+    first_mutation_seen = False
     code_search_seen = False
-    relevant = set(relevant_files)
+    code_search_before_mutation = False
+    relevant = {_normalize_policy_path(path) for path in relevant_files}
+    existing = {_normalize_policy_path(path): _display_policy_path(path) for path in existing_paths}
+    editable = {_normalize_policy_path(path): _display_policy_path(path) for path in editable_paths}
     hit = False
+    code_search_calls = 0
     for event in events:
         if event.get("type") != "tool_result":
             continue
@@ -171,25 +193,90 @@ def collect_benchmark_policy_metrics(
             if metadata.get("ok") is False:
                 continue
             tool_name = str(metadata.get("tool_name") or "")
+            data = _mapping(metadata.get("data"))
             if tool_name in _SOURCE_READ_TOOLS:
-                read_seen = True
+                for path in _read_paths(tool_name, data):
+                    normalized = _normalize_policy_path(path)
+                    read_paths.setdefault(normalized, _display_policy_path(path))
+                    if code_search_before_mutation and not first_mutation_seen and normalized in candidates:
+                        candidate_reads.add(normalized)
             elif tool_name in _MUTATION_TOOLS:
                 mutation_seen = True
-                violation = violation or not read_seen
+                first_mutation_seen = True
+                for path in _mutation_paths(tool_name, data):
+                    normalized = _normalize_policy_path(path)
+                    display = _display_policy_path(path)
+                    mutated_paths.setdefault(normalized, display)
+                    if normalized in existing and normalized not in read_paths:
+                        unread_paths.setdefault(normalized, existing[normalized])
             elif tool_name == "code_search":
                 code_search_seen = True
-                hits = _mapping(metadata.get("data")).get("hits")
+                code_search_calls += 1
+                if not first_mutation_seen:
+                    code_search_before_mutation = True
+                hits = data.get("hits")
                 if isinstance(hits, list):
                     paths = {
-                        str(item.get("path"))
+                        _normalize_policy_path(str(item.get("path")))
                         for item in hits[:5]
                         if isinstance(item, dict) and item.get("path")
                     }
+                    for item in hits[:5]:
+                        if isinstance(item, dict) and item.get("path"):
+                            path = str(item["path"])
+                            candidates.setdefault(_normalize_policy_path(path), _display_policy_path(path))
                     hit = hit or bool(relevant.intersection(paths))
-    return {
-        "source_read_policy_violation": violation or (mutation_seen and not read_seen),
-        "relevant_file_hit_at_5": hit if code_search_seen else None,
+    new_files = {
+        normalized: display
+        for normalized, display in mutated_paths.items()
+        if existing and normalized not in existing
     }
+    out_of_scope = {
+        normalized: display
+        for normalized, display in mutated_paths.items()
+        if editable and normalized not in editable
+    }
+    legacy_unscoped_violation = mutation_seen and not existing and not read_paths
+    retrieval_violation = bool(
+        retrieval_required
+        and retrieval_mode == "vector"
+        and (not code_search_before_mutation or not candidate_reads)
+    )
+    return {
+        "source_read_policy_violation": bool(unread_paths) or legacy_unscoped_violation,
+        "relevant_file_hit_at_5": hit if code_search_seen else None,
+        "unread_edited_paths": sorted(unread_paths.values(), key=str.casefold),
+        "stale_read_paths": [],
+        "new_files": sorted(new_files.values(), key=str.casefold),
+        "out_of_scope_paths": sorted(out_of_scope.values(), key=str.casefold),
+        "code_search_call_count": code_search_calls,
+        "retrieval_candidate_read_count": len(candidate_reads),
+        "retrieval_policy_violation": retrieval_violation,
+    }
+
+
+def _read_paths(tool_name: str, data: dict[str, Any]) -> list[str]:
+    if tool_name == "view":
+        return [str(data["path"])] if data.get("path") else []
+    files = data.get("files")
+    if not isinstance(files, list):
+        return []
+    return [str(item["path"]) for item in files if isinstance(item, dict) and item.get("path")]
+
+
+def _mutation_paths(tool_name: str, data: dict[str, Any]) -> list[str]:
+    if tool_name == "apply_patch":
+        changed = data.get("changed_files")
+        return [str(path) for path in changed] if isinstance(changed, list) else []
+    return [str(data["path"])] if data.get("path") else []
+
+
+def _display_policy_path(path: str) -> str:
+    return str(path).replace("\\", "/").removeprefix("./")
+
+
+def _normalize_policy_path(path: str) -> str:
+    return _display_policy_path(path).casefold()
 
 
 def _read_jsonl(path: str | Path | None) -> list[dict[str, Any]]:

@@ -25,6 +25,7 @@ def test_load_tasks_jsonl_reads_local_task(tmp_path: Path):
                 "files": {"src/demo.py": "VALUE = 1\n"},
                 "problem_statement": "Make VALUE equal 2.",
                 "test_command": "python -m pytest -q",
+                "retrieval_required": True,
             }
         )
         + "\n",
@@ -38,6 +39,7 @@ def test_load_tasks_jsonl_reads_local_task(tmp_path: Path):
             files={"src/demo.py": "VALUE = 1\n"},
             problem_statement="Make VALUE equal 2.",
             test_command="python -m pytest -q",
+            retrieval_required=True,
         )
     ]
 
@@ -206,6 +208,8 @@ def test_sample_suite_contains_nine_reproducible_initial_failures(tmp_path: Path
     assert sum("single_file" in task.tags for task in tasks) >= 4
     assert sum("multi_file" in task.tags for task in tasks) >= 3
     assert sum("semantic" in task.tags for task in tasks) >= 2
+    required = {task.id for task in tasks if task.retrieval_required}
+    assert required == {"service_repository_contract", "parser_dispatch"}
     assert sum("focused_full_regression" in task.tags for task in tasks) >= 1
     for task in tasks:
         repo = materialize_task_repo(task, tmp_path)
@@ -272,6 +276,15 @@ def test_baseline_and_vector_candidate_modes_use_same_failure_and_vector_hits_se
     assert comparison["baseline"]["relevant_file_hit_at_5"] is False
     assert comparison["vector"]["relevant_file_hit_at_5"] is True
     assert comparison["vector"]["query_latency_seconds"] >= 0
+    assert comparison["expected_relevant_paths"] == ["src/parser.py"]
+    assert set(comparison["baseline"]["top_5"][0]) == {
+        "path", "symbol", "score", "start_line", "end_line", "hit"
+    }
+    assert set(comparison["vector"]["top_5"][0]) == {
+        "path", "symbol", "score", "start_line", "end_line", "hit"
+    }
+    assert comparison["indexed_chunk_count"] > 0
+    assert comparison["embedding_dimension"] == 64
     json.dumps(comparison)
 
 

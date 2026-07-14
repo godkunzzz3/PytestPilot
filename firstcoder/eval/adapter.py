@@ -12,6 +12,7 @@ from firstcoder.agent.loop_limits import AgentLoopLimits
 from firstcoder.agent.session import AgentSession
 from firstcoder.context.store import JsonlSessionStore
 from firstcoder.eval.patch import collect_git_diff
+from firstcoder.eval.costs import BudgetedProvider, RequestBoundaryBudget
 from firstcoder.eval.metrics import collect_benchmark_policy_metrics, collect_context_metrics
 from firstcoder.eval.tasks import CodingTask, CodingTaskResult
 from firstcoder.permissions.grants import PermissionGrantStore
@@ -54,6 +55,8 @@ class FirstCoderCodingAgentAdapter:
         provider_factory: ProviderFactory = create_provider,
         extra_tools: list[Tool] | None = None,
         extra_tools_factory: ExtraToolsFactory | None = None,
+        request_budget: RequestBoundaryBudget | None = None,
+        benchmark_skill_allowlist: tuple[str, ...] = (),
     ) -> None:
         self.model_name_or_path = model_name_or_path
         self.provider_name = provider_name
@@ -65,6 +68,8 @@ class FirstCoderCodingAgentAdapter:
         self.provider_factory = provider_factory
         self.extra_tools = list(extra_tools or [])
         self.extra_tools_factory = extra_tools_factory
+        self.request_budget = request_budget
+        self.benchmark_skill_allowlist = benchmark_skill_allowlist
 
     def run_task(self, task: CodingTask) -> CodingTaskResult:
         session_root = self._session_root_for_task(task)
@@ -81,6 +86,10 @@ class FirstCoderCodingAgentAdapter:
             collect_benchmark_policy_metrics(
                 transcript_path=transcript_path,
                 relevant_files=task.metadata.get("relevant_files") or [],
+                existing_paths=task.metadata.get("existing_paths") or [],
+                editable_paths=task.metadata.get("editable_paths") or [],
+                retrieval_required=bool(task.metadata.get("retrieval_required")),
+                retrieval_mode=str(task.metadata.get("retrieval_mode") or "baseline"),
             )
         )
         return CodingTaskResult(
@@ -109,6 +118,7 @@ class FirstCoderCodingAgentAdapter:
             include_mutation_tools=True,
             include_execution_tools=True,
             include_network_tools=False,
+            include_interactive_tools=False,
             access=sandbox_access,
         )
         task_tools = [*self.extra_tools]
@@ -130,6 +140,8 @@ class FirstCoderCodingAgentAdapter:
             tools=tools,
             permission_manager=permission_manager,
             sandbox_access=sandbox_access,
+            load_skills=bool(self.benchmark_skill_allowlist),
+            skill_allowlist=self.benchmark_skill_allowlist,
         )
         return AgentLoop(
             session=session,
@@ -140,6 +152,8 @@ class FirstCoderCodingAgentAdapter:
 
     def _create_provider(self) -> ChatProvider:
         provider = self.provider_factory(self.provider_name)
+        if self.request_budget is not None:
+            provider = BudgetedProvider(provider, self.request_budget)
         if self.provider_retries <= 0:
             return provider
         return RetryableBenchmarkProvider(
@@ -221,12 +235,20 @@ def _build_task_prompt(task: CodingTask) -> str:
         "You are running inside a SWE-bench style benchmark task.\n"
         f"Instance: {task.instance_id}\n"
         f"Base commit: {base_commit}\n\n"
+        f"Working directory: {task.repo_path.resolve()}\n"
+        f"Retrieval required: {'yes' if task.metadata.get('retrieval_required') else 'no'}\n\n"
         "Problem statement:\n"
         f"{task.problem_statement.strip()}\n\n"
         "Return by editing files in the repository. Do not write a final patch manually. "
         "Use tests when useful, keep changes minimal, and leave the repository with the fix applied. "
         "Never assume the repository is /workspace; tool paths and cwd are relative to the actual project root. "
-        "Use the diagnostics tool for pytest so it runs with FirstCoder's active Python environment."
+        "Use the diagnostics tool for pytest so it runs with FirstCoder's active Python environment. "
+        "Start with stack-trace paths, the failing test module, exact symbols, and grep. "
+        "Before changing an existing file, read that exact file with view or read_multi. "
+        "When this task is marked retrieval_required and code_search is available, call code_search before the first "
+        "mutation, then read at least one returned candidate with view or read_multi. If code_search is unavailable, "
+        "continue with deterministic grep/glob/view tools without asking the user. Never access /workspace. "
+        "Run pytest through diagnostics so it uses FirstCoder's current .venv interpreter, not a missing bare python."
     )
 
 

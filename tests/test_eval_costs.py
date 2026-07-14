@@ -162,3 +162,32 @@ def test_streaming_usage_is_committed_once() -> None:
     assert events[-1].kind == "message_completed"
     assert budget.snapshot()["request_count"] == 1
     assert budget.snapshot()["committed_cost_usd"] == 0.0000196
+
+
+def test_actual_usage_above_input_estimate_is_committed_and_affects_next_request() -> None:
+    provider = _FakeProvider([_response(TokenUsage(input_tokens=1_000_000, output_tokens=0, total_tokens=1_000_000))])
+    budget = RequestBoundaryBudget(limit_usd=0.141, default_max_output_tokens=100)
+    guarded = BudgetedProvider(provider, budget)
+
+    guarded.complete(_request(max_tokens=100))
+
+    assert budget.snapshot()["committed_cost_usd"] == 0.14
+    with pytest.raises(RequestBudgetExceeded):
+        guarded.complete(_request(max_tokens=4096))
+    assert provider.calls == 1
+
+
+def test_shared_request_budget_accumulates_across_provider_instances_and_serializes() -> None:
+    usage = TokenUsage(input_tokens=100, output_tokens=10, total_tokens=110)
+    budget = RequestBoundaryBudget(limit_usd=0.25)
+    first = BudgetedProvider(_FakeProvider([_response(usage)]), budget)
+    second = BudgetedProvider(_FakeProvider([_response(usage)]), budget)
+
+    first.complete(_request())
+    second.complete(_request())
+    payload = json.dumps(budget.snapshot())
+
+    assert budget.snapshot()["request_count"] == 2
+    assert budget.snapshot()["committed_cost_usd"] == 0.0000336
+    assert "small prompt" not in payload
+    assert "api_key" not in payload.lower()

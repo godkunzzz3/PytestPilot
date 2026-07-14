@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+import json
 
 from firstcoder.config import AppConfig, load_config
 from firstcoder.config.settings import default_global_config_path, render_default_config
@@ -85,6 +86,19 @@ def test_create_provider_from_config_uses_preset_values():
     assert provider.sdk_max_retries == 0
     assert provider.capabilities.supports_tools is True
     assert provider.capabilities.supports_stream_usage is True
+
+    serialized = json.dumps(
+        {
+            "provider": provider.name,
+            "model": provider.model,
+            "base_url": provider.base_url,
+            "sdk_max_retries": provider.sdk_max_retries,
+            "temperature": provider.default_temperature,
+            "extra_body": provider.extra_body,
+        }
+    )
+    assert "test-key" not in serialized
+    assert "api_key" not in serialized.lower()
 
 
 def test_create_provider_from_config_reports_missing_api_key():

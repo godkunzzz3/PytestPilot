@@ -38,6 +38,7 @@ class LocalPytestTask:
     editable_paths: tuple[str, ...] = ()
     relevant_files: tuple[str, ...] = ()
     semantic_query: str | None = None
+    retrieval_required: bool = False
     tags: tuple[str, ...] = ()
 
 
@@ -70,6 +71,7 @@ def load_tasks_jsonl(path: str | Path) -> list[LocalPytestTask]:
                     editable_paths=tuple(str(path) for path in data.get("editable_paths", ())),
                     relevant_files=tuple(str(path) for path in data.get("relevant_files", ())),
                     semantic_query=str(data["semantic_query"]) if data.get("semantic_query") else None,
+                    retrieval_required=bool(data.get("retrieval_required", False)),
                     tags=tuple(str(tag) for tag in data.get("tags", ())),
                 )
             )
@@ -191,7 +193,9 @@ def run_one_task(
             "title": task.title,
             "test_command": task.test_command,
             "editable_paths": list(task.editable_paths),
+            "existing_paths": list(task.files),
             "retrieval_mode": retrieval_mode,
+            "retrieval_required": task.retrieval_required,
             "semantic_query": task.semantic_query,
             "relevant_files": list(task.relevant_files),
         },
@@ -204,7 +208,13 @@ def run_one_task(
     test_file_modified = tests_before != tests_after
     allowed = set(task.editable_paths)
     out_of_scope_write = bool(allowed and any(path not in allowed for path in changed_paths))
-    infrastructure_pass = initial_result.returncode != 0 and not test_file_modified and not out_of_scope_write
+    infrastructure_pass = (
+        initial_result.returncode != 0
+        and not test_file_modified
+        and not out_of_scope_write
+        and not bool(result.runtime_metrics.get("source_read_policy_violation"))
+        and not bool(result.runtime_metrics.get("retrieval_policy_violation"))
+    )
     runtime_metrics = empty_runtime_metrics()
     runtime_metrics.update(result.runtime_metrics)
     row = {
@@ -227,6 +237,7 @@ def run_one_task(
         "retrieval_mode": retrieval_mode,
         "relevant_file_hit_at_5": result.runtime_metrics.get("relevant_file_hit_at_5"),
         "source_read_policy_violation": result.runtime_metrics.get("source_read_policy_violation", False),
+        "retrieval_policy_violation": result.runtime_metrics.get("retrieval_policy_violation", False),
         "transcript_path": str(result.transcript_path) if result.transcript_path else None,
         "raw_response": result.raw_response,
         "model_patch": final_diff,
@@ -244,6 +255,8 @@ def run_one_task(
         row["failure_category"] = "out_of_scope_write"
     elif row["source_read_policy_violation"]:
         row["failure_category"] = "source_read_policy_violation"
+    elif row["retrieval_policy_violation"]:
+        row["failure_category"] = "retrieval_policy_violation"
     else:
         row["failure_category"] = "tests_failed"
     return row
