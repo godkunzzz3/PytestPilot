@@ -1,0 +1,9 @@
+==================================== ERRORS ====================================
+________________ ERROR collecting tests/test_service.py _________________
+ImportError while importing test module '/tmp/run-123/tests/test_service.py'.
+E   ImportError: cannot import name 'Service' from 'src.service'
+tests/test_service.py:3: ImportError
+=========================== short test summary info ============================
+ERROR tests/test_service.py
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+=============================== 1 error in 0.11s ===============================

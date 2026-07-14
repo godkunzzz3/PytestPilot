@@ -1,0 +1,11 @@
+==================================== ERRORS ====================================
+________________ ERROR at setup of test_uses_database __________________
+E   RuntimeError: database unavailable
+tests/conftest.py:22: RuntimeError
+_______________ ERROR at teardown of test_closes_database _______________
+E   ValueError: connection already closed
+tests/conftest.py:40: ValueError
+=========================== short test summary info ============================
+ERROR tests/test_db.py::test_uses_database - RuntimeError: database unavailable
+ERROR tests/test_db.py::test_closes_database - ValueError: connection already closed
+=============================== 2 errors in 0.20s ===============================

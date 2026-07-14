@@ -1,0 +1,16 @@
+============================= test session starts ==============================
+collected 1 item
+
+tests/test_math.py F                                                     [100%]
+
+=================================== FAILURES ===================================
+____________________________ test_invoice_total ________________________________
+
+    def test_invoice_total():
+>       assert calculate_total(10, 0.2) == 12
+E       assert 10 == 12
+
+src/invoice.py:14: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_math.py::test_invoice_total - assert 10 == 12
+============================== 1 failed in 0.08s ===============================

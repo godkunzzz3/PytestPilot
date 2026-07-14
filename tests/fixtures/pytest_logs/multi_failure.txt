@@ -1,0 +1,11 @@
+=================================== FAILURES ===================================
+___________________________ test_parse_valid[user] ____________________________
+E   ValueError: invalid role user
+src/parser.py:20: ValueError
+___________________________ test_parse_valid[admin] ___________________________
+E   TypeError: expected mapping, got str
+src/parser.py:31: TypeError
+=========================== short test summary info ============================
+FAILED tests/test_parser.py::test_parse_valid[user] - ValueError: invalid role user
+FAILED tests/test_parser.py::test_parse_valid[admin] - TypeError: expected mapping, got str
+============================== 2 failed in 0.12s ===============================

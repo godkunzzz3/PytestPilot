@@ -1,0 +1,8 @@
+=================================== FAILURES ===================================
+____________________________ test_windows_path _______________________________
+E   AssertionError: Expected: enabled
+E   Actual: disabled
+C:\work\repo\src\config.py:17: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_config.py::test_windows_path - AssertionError: Expected enabled, got disabled
+============================== 1 failed in 1.00s ===============================
