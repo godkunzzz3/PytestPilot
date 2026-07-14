@@ -17,6 +17,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from firstcoder.eval.adapter import FirstCoderCodingAgentAdapter
+from firstcoder.eval.metrics import collect_diff_metrics, empty_runtime_metrics
 from firstcoder.eval.patch import collect_git_diff
 from firstcoder.eval.tasks import CodingTask, CodingTaskResult
 
@@ -138,7 +139,10 @@ def run_one_task(
     )
     result = adapter.run_task(coding_task)
     pytest_result = run_pytest(repo, task.test_command)
-    return {
+    final_diff = collect_git_diff(repo, include_untracked=True)
+    runtime_metrics = empty_runtime_metrics()
+    runtime_metrics.update(result.runtime_metrics)
+    row = {
         "id": task.id,
         "title": task.title,
         "repo_path": str(repo),
@@ -149,8 +153,13 @@ def run_one_task(
         "pytest_output": pytest_result.output,
         "transcript_path": str(result.transcript_path) if result.transcript_path else None,
         "raw_response": result.raw_response,
-        "model_patch": collect_git_diff(repo, include_untracked=True),
+        "model_patch": final_diff,
+        "final_diff": final_diff,
+        "context_metrics": dict(runtime_metrics),
     }
+    row.update(runtime_metrics)
+    row.update(collect_diff_metrics(final_diff))
+    return row
 
 
 def write_summary_json(path: str | Path, rows: Iterable[dict[str, Any]]) -> None:

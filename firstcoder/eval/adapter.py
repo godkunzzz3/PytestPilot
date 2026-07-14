@@ -12,6 +12,7 @@ from firstcoder.agent.loop_limits import AgentLoopLimits
 from firstcoder.agent.session import AgentSession
 from firstcoder.context.store import JsonlSessionStore
 from firstcoder.eval.patch import collect_git_diff
+from firstcoder.eval.metrics import collect_context_metrics
 from firstcoder.eval.tasks import CodingTask, CodingTaskResult
 from firstcoder.permissions.grants import PermissionGrantStore
 from firstcoder.permissions.manager import PermissionManager
@@ -64,12 +65,18 @@ class FirstCoderCodingAgentAdapter:
         session_root.mkdir(parents=True, exist_ok=True)
         loop = self.loop_factory(task, session_root)
         response = loop.run_user_turn(_build_task_prompt(task))
+        transcript_path = session_root / "sessions" / f"{_session_dir_name(task.instance_id)}.jsonl"
+        model_patch = collect_git_diff(task.repo_path, include_untracked=True)
         return CodingTaskResult(
             instance_id=task.instance_id,
             model_name_or_path=self.model_name_or_path,
-            model_patch=collect_git_diff(task.repo_path, include_untracked=True),
-            transcript_path=session_root / "sessions" / f"{_session_dir_name(task.instance_id)}.jsonl",
+            model_patch=model_patch,
+            transcript_path=transcript_path,
             raw_response=response.content,
+            runtime_metrics=collect_context_metrics(
+                transcript_path=transcript_path,
+                provider_call_count=_provider_call_count(loop),
+            ),
         )
 
     def _session_root_for_task(self, task: CodingTask) -> Path:
@@ -139,6 +146,7 @@ class RetryableBenchmarkProvider(ChatProvider):
         self.max_retries = max(0, max_retries)
         self.initial_delay_seconds = max(0.0, initial_delay_seconds)
         self.sleep = sleep
+        self.call_count = 0
 
     @property
     def name(self) -> str:
@@ -152,6 +160,7 @@ class RetryableBenchmarkProvider(ChatProvider):
         attempt = 0
         while True:
             try:
+                self.call_count += 1
                 return self.provider.complete(request)
             except ProviderError as exc:
                 if not exc.retryable or attempt >= self.max_retries:
@@ -208,3 +217,12 @@ def _session_dir_name(instance_id: str) -> str:
     while "___" in safe:
         safe = safe.replace("___", "__")
     return safe or "instance"
+
+
+def _provider_call_count(loop: AgentLoop) -> int:
+    provider = getattr(loop, "provider", None)
+    attempt_count = getattr(provider, "call_count", None)
+    if isinstance(attempt_count, int):
+        return attempt_count
+    count = getattr(loop, "provider_call_count", 0)
+    return int(count) if isinstance(count, int) else 0

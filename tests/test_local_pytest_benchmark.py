@@ -98,6 +98,22 @@ def test_run_tasks_scores_agent_changes_and_writes_summary(tmp_path: Path):
                 model_name_or_path="fake",
                 model_patch="",
                 raw_response="done",
+                runtime_metrics={
+                    "provider_call_count": 2,
+                    "tool_call_count": 1,
+                    "tool_calls_by_name": {"view": 1},
+                    "actual_input_tokens": None,
+                    "actual_output_tokens": None,
+                    "actual_total_tokens": None,
+                    "estimated_input_tokens": 17,
+                    "compaction_event_count": 0,
+                    "compaction_trigger_counts": {},
+                    "compaction_tokens_before": 0,
+                    "compaction_tokens_after": 0,
+                    "archive_count": 0,
+                    "archive_retrieval_count": 0,
+                    "source_read_count": 1,
+                },
             )
 
     task = LocalPytestTask(
@@ -120,4 +136,43 @@ def test_run_tasks_scores_agent_changes_and_writes_summary(tmp_path: Path):
 
     assert rows[0]["passed"] is True
     assert "+VALUE = 2" in rows[0]["model_patch"]
-    assert json.loads(summary.read_text(encoding="utf-8"))[0]["passed"] is True
+    assert rows[0]["final_diff"] == rows[0]["model_patch"]
+    assert rows[0]["provider_call_count"] == 2
+    assert rows[0]["tool_calls_by_name"] == {"view": 1}
+    assert rows[0]["actual_total_tokens"] is None
+    assert rows[0]["estimated_input_tokens"] == 17
+    assert rows[0]["context_metrics"]["source_read_count"] == 1
+    assert rows[0]["diff_file_count"] == 1
+    assert rows[0]["diff_added_lines"] == 1
+    assert rows[0]["diff_deleted_lines"] == 1
+    written = json.loads(summary.read_text(encoding="utf-8"))[0]
+    assert written["passed"] is True
+    assert written["actual_total_tokens"] is None
+    assert written["context_metrics"]["provider_call_count"] == 2
+
+
+def test_run_tasks_keeps_legacy_result_defaults_json_serializable(tmp_path: Path):
+    class LegacyAdapter:
+        def run_task(self, task: CodingTask) -> CodingTaskResult:
+            return CodingTaskResult(instance_id=task.instance_id, model_name_or_path="fake", model_patch="")
+
+    task = LocalPytestTask(
+        id="legacy",
+        title="Legacy",
+        files={"tests/test_ok.py": "def test_ok():\n    assert True\n"},
+        problem_statement="No change needed.",
+    )
+    summary = tmp_path / "legacy.json"
+
+    rows = run_tasks(
+        tasks=[task],
+        workdir=tmp_path / "work",
+        summary_out=summary,
+        adapter=LegacyAdapter(),
+    )
+
+    assert rows[0]["provider_call_count"] == 0
+    assert rows[0]["tool_call_count"] == 0
+    assert rows[0]["actual_total_tokens"] is None
+    assert rows[0]["context_metrics"]["provider_call_count"] == 0
+    assert json.loads(summary.read_text(encoding="utf-8"))[0]["id"] == "legacy"
