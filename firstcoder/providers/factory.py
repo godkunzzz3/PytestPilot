@@ -74,6 +74,8 @@ def create_provider_from_config(config: AppConfig) -> ChatProvider:
             extra_headers=preset.extra_headers,
             extra_body=preset.extra_body,
             default_max_tokens=preset.default_max_tokens,
+            default_temperature=preset.default_temperature,
+            sdk_max_retries=preset.sdk_max_retries,
         )
 
     if preset.kind == "anthropic":

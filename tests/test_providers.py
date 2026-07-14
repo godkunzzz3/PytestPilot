@@ -20,6 +20,45 @@ from firstcoder.providers.types import (
 )
 
 
+def test_openai_compatible_passes_sdk_max_retries_to_real_client(monkeypatch) -> None:
+    captured = {}
+
+    def fake_openai(**kwargs):
+        captured.update(kwargs)
+        return _FakeOpenAIClient()
+
+    monkeypatch.setattr("openai.OpenAI", fake_openai)
+
+    provider = OpenAICompatibleProvider(
+        name="deepseek",
+        model="deepseek-v4-flash",
+        api_key="test-only",
+        base_url="https://api.deepseek.com",
+        sdk_max_retries=0,
+    )
+
+    assert provider.sdk_max_retries == 0
+    assert captured["max_retries"] == 0
+
+
+def test_injected_openai_client_does_not_construct_sdk_client(monkeypatch) -> None:
+    def fail_openai(**kwargs):  # pragma: no cover - only runs on regression
+        raise AssertionError("OpenAI constructor must not run for injected clients")
+
+    monkeypatch.setattr("openai.OpenAI", fail_openai)
+    client = _FakeOpenAIClient()
+
+    provider = OpenAICompatibleProvider(
+        name="fake",
+        model="fake-model",
+        api_key="unused",
+        sdk_max_retries=0,
+        client=client,
+    )
+
+    assert provider.complete(ChatRequest(messages=[ChatMessage(role="user", content="hi")])).model == "fake-model"
+
+
 class _Object:
     """用于模拟 SDK 返回对象的轻量测试对象。"""
 
@@ -632,12 +671,14 @@ def test_openai_compatible_provider_applies_default_max_tokens_and_nested_extra_
         api_key="not-recorded",
         client=client,
         default_max_tokens=4096,
+        default_temperature=0,
         extra_body={"thinking": {"type": "disabled"}},
     )
 
     provider.complete(ChatRequest(messages=[ChatMessage(role="user", content="hi")]))
 
     assert client.completions.last_params["max_tokens"] == 4096
+    assert client.completions.last_params["temperature"] == 0
     assert client.completions.last_params["extra_body"] == {"thinking": {"type": "disabled"}}
 
 

@@ -79,6 +79,8 @@ class OpenAICompatibleProvider(ChatProvider):
         extra_headers: dict[str, str] | None = None,
         extra_body: dict[str, Any] | None = None,
         default_max_tokens: int | None = None,
+        default_temperature: float | None = None,
+        sdk_max_retries: int | None = None,
         client: Any | None = None,
     ) -> None:
         self._name = name
@@ -88,6 +90,8 @@ class OpenAICompatibleProvider(ChatProvider):
         self._extra_headers = dict(extra_headers or {})
         self._extra_body = dict(extra_body or {})
         self._default_max_tokens = default_max_tokens
+        self._default_temperature = default_temperature
+        self._sdk_max_retries = sdk_max_retries
 
         # 允许测试或上层代码注入 client；没有注入时才创建真实 SDK client。
         if client is not None:
@@ -100,6 +104,8 @@ class OpenAICompatibleProvider(ChatProvider):
                 kwargs["base_url"] = base_url
             if extra_headers:
                 kwargs["default_headers"] = extra_headers
+            if sdk_max_retries is not None:
+                kwargs["max_retries"] = max(0, sdk_max_retries)
             self._client = OpenAI(**kwargs)
 
     @property
@@ -129,6 +135,14 @@ class OpenAICompatibleProvider(ChatProvider):
     @property
     def default_max_tokens(self) -> int | None:
         return self._default_max_tokens
+
+    @property
+    def default_temperature(self) -> float | None:
+        return self._default_temperature
+
+    @property
+    def sdk_max_retries(self) -> int | None:
+        return self._sdk_max_retries
 
     def complete(self, request: ChatRequest) -> ChatResponse:
         """调用 Chat Completions，并转换成项目内部统一响应。"""
@@ -310,8 +324,9 @@ class OpenAICompatibleProvider(ChatProvider):
                 # 只有 preset 明确声明支持时才发送 parallel_tool_calls，兼容一些中转站
                 # 对 OpenAI 新字段支持不完整的情况。
                 params["parallel_tool_calls"] = True
-        if request.temperature is not None:
-            params["temperature"] = request.temperature
+        temperature = request.temperature if request.temperature is not None else self._default_temperature
+        if temperature is not None:
+            params["temperature"] = temperature
         max_tokens = request.max_tokens if request.max_tokens is not None else self._default_max_tokens
         if max_tokens is not None:
             params[self._capabilities.token_param] = max_tokens

@@ -81,6 +81,8 @@ def test_create_provider_from_config_uses_preset_values():
     assert provider.base_url == "https://api.deepseek.com"
     assert provider.extra_body == {"thinking": {"type": "disabled"}}
     assert provider.default_max_tokens == 4096
+    assert provider.default_temperature == 0.0
+    assert provider.sdk_max_retries == 0
     assert provider.capabilities.supports_tools is True
     assert provider.capabilities.supports_stream_usage is True
 

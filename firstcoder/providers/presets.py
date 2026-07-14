@@ -26,6 +26,8 @@ class ProviderPreset:
     extra_headers: dict[str, str] | None = None
     extra_body: dict[str, Any] | None = None
     default_max_tokens: int | None = None
+    default_temperature: float | None = None
+    sdk_max_retries: int | None = None
 
 
 # 这里优先覆盖对 coding agent 学习项目最常见的几类接入方式。
@@ -48,6 +50,8 @@ PROVIDER_PRESETS: dict[str, ProviderPreset] = {
         default_base_url="https://api.deepseek.com",
         extra_body={"thinking": {"type": "disabled"}},
         default_max_tokens=4096,
+        default_temperature=0.0,
+        sdk_max_retries=0,
         capabilities=ProviderCapabilities(supports_streaming=True, supports_stream_usage=True),
     ),
     "qwen": ProviderPreset(
