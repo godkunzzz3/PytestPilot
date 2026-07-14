@@ -10,7 +10,9 @@ from benchmark.local_pytest.runner import (
     run_pytest,
     write_summary_json,
 )
+from benchmark.local_pytest.offline import evaluate_retrieval_candidates
 from firstcoder.eval.tasks import CodingTask, CodingTaskResult
+from firstcoder.retrieval import FakeEmbeddingProvider, FakeVectorStore
 
 
 def test_load_tasks_jsonl_reads_local_task(tmp_path: Path):
@@ -176,3 +178,89 @@ def test_run_tasks_keeps_legacy_result_defaults_json_serializable(tmp_path: Path
     assert rows[0]["actual_total_tokens"] is None
     assert rows[0]["context_metrics"]["provider_call_count"] == 0
     assert json.loads(summary.read_text(encoding="utf-8"))[0]["id"] == "legacy"
+
+
+def test_sample_suite_contains_nine_reproducible_initial_failures(tmp_path: Path) -> None:
+    tasks = load_tasks_jsonl("benchmark/local_pytest/tasks.sample.jsonl")
+
+    assert [task.id for task in tasks] == [
+        "username_normalization",
+        "invoice_rounding",
+        "optional_config",
+        "validation_contract",
+        "cache_invalidation",
+        "import_or_collection_error",
+        "service_repository_contract",
+        "parser_dispatch",
+        "full_suite_regression",
+    ]
+    assert sum("single_file" in task.tags for task in tasks) >= 4
+    assert sum("multi_file" in task.tags for task in tasks) >= 3
+    assert sum("semantic" in task.tags for task in tasks) >= 2
+    assert sum("focused_full_regression" in task.tags for task in tasks) >= 1
+    for task in tasks:
+        repo = materialize_task_repo(task, tmp_path)
+        initial = run_pytest(repo, task.test_command)
+        assert initial.passed is False, task.id
+        assert task.editable_paths
+        assert all(not path.startswith("tests/") for path in task.editable_paths)
+
+
+def test_evaluator_rejects_test_modification_and_out_of_scope_write(tmp_path: Path) -> None:
+    class TamperingAdapter:
+        def run_task(self, task: CodingTask) -> CodingTaskResult:
+            (task.repo_path / "tests" / "test_demo.py").write_text(
+                "def test_value():\n    assert True\n", encoding="utf-8"
+            )
+            (task.repo_path / "README.md").write_text("out of scope\n", encoding="utf-8")
+            return CodingTaskResult(instance_id=task.instance_id, model_name_or_path="fake", model_patch="")
+
+    task = LocalPytestTask(
+        id="tamper",
+        title="Tamper",
+        files={
+            "src/demo.py": "VALUE = 1\n",
+            "tests/test_demo.py": "from src.demo import VALUE\n\ndef test_value():\n    assert VALUE == 2\n",
+        },
+        problem_statement="Fix source.",
+        editable_paths=("src/demo.py",),
+    )
+
+    row = run_tasks(
+        tasks=[task],
+        workdir=tmp_path / "work",
+        summary_out=tmp_path / "summary.json",
+        adapter=TamperingAdapter(),
+    )[0]
+
+    assert row["passed"] is False
+    assert row["initial_failure_confirmed"] is True
+    assert row["test_file_modified"] is True
+    assert row["out_of_scope_write"] is True
+    assert row["infrastructure_pass"] is False
+
+
+def test_baseline_and_vector_candidate_modes_use_same_failure_and_vector_hits_semantic_file(tmp_path: Path) -> None:
+    task = next(
+        task for task in load_tasks_jsonl("benchmark/local_pytest/tasks.sample.jsonl") if task.id == "parser_dispatch"
+    )
+    repo = materialize_task_repo(task, tmp_path)
+    initial = run_pytest(repo, task.test_command)
+    embedder = FakeEmbeddingProvider(dimension=64)
+    store = FakeVectorStore(dimension=64)
+
+    comparison = evaluate_retrieval_candidates(
+        repo,
+        task=task,
+        pytest_output=initial.output,
+        embedder=embedder,
+        store=store,
+    )
+
+    assert comparison["initial_failure_fingerprint"]
+    assert comparison["baseline"]["mode"] == "baseline"
+    assert comparison["vector"]["mode"] == "vector"
+    assert comparison["baseline"]["relevant_file_hit_at_5"] is False
+    assert comparison["vector"]["relevant_file_hit_at_5"] is True
+    assert comparison["vector"]["query_latency_seconds"] >= 0
+    json.dumps(comparison)

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -32,6 +34,10 @@ class LocalPytestTask:
     files: dict[str, str]
     problem_statement: str
     test_command: str = DEFAULT_TEST_COMMAND
+    editable_paths: tuple[str, ...] = ()
+    relevant_files: tuple[str, ...] = ()
+    semantic_query: str | None = None
+    tags: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +66,10 @@ def load_tasks_jsonl(path: str | Path) -> list[LocalPytestTask]:
                     files={str(name): str(content) for name, content in dict(data["files"]).items()},
                     problem_statement=str(data["problem_statement"]),
                     test_command=str(data.get("test_command") or DEFAULT_TEST_COMMAND),
+                    editable_paths=tuple(str(path) for path in data.get("editable_paths", ())),
+                    relevant_files=tuple(str(path) for path in data.get("relevant_files", ())),
+                    semantic_query=str(data["semantic_query"]) if data.get("semantic_query") else None,
+                    tags=tuple(str(tag) for tag in data.get("tags", ())),
                 )
             )
     return tasks
@@ -83,6 +93,7 @@ def run_pytest(repo: str | Path, command: str) -> PytestResult:
     result = subprocess.run(
         _split_command(command),
         cwd=Path(repo),
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -105,6 +116,7 @@ def run_tasks(
     session_root: str | Path = ".firstcoder-local-pytest",
     force: bool = False,
     adapter: LocalAgentAdapter | None = None,
+    retrieval_mode: str = "baseline",
 ) -> list[dict[str, Any]]:
     selected = tasks[:max_tasks] if max_tasks is not None else tasks
     workdir_path = Path(workdir)
@@ -115,7 +127,13 @@ def run_tasks(
         session_root=session_root,
     )
     rows = [
-        run_one_task(task=task, workdir=workdir_path, adapter=agent, force=force)
+        run_one_task(
+            task=task,
+            workdir=workdir_path,
+            adapter=agent,
+            force=force,
+            retrieval_mode=retrieval_mode,
+        )
         for task in selected
     ]
     write_summary_json(summary_out, rows)
@@ -128,29 +146,55 @@ def run_one_task(
     workdir: Path,
     adapter: LocalAgentAdapter,
     force: bool,
+    retrieval_mode: str = "baseline",
 ) -> dict[str, Any]:
     started_at = time.time()
     repo = materialize_task_repo(task, workdir, force=force)
+    tests_before = _test_file_hashes(repo)
+    initial_result = run_pytest(repo, task.test_command)
     coding_task = CodingTask(
         instance_id=task.id,
         repo_path=repo,
         problem_statement=_build_problem_statement(task),
-        metadata={"benchmark": "local_pytest", "title": task.title, "test_command": task.test_command},
+        metadata={
+            "benchmark": "local_pytest",
+            "title": task.title,
+            "test_command": task.test_command,
+            "editable_paths": list(task.editable_paths),
+            "retrieval_mode": retrieval_mode,
+            "semantic_query": task.semantic_query,
+        },
     )
     result = adapter.run_task(coding_task)
     pytest_result = run_pytest(repo, task.test_command)
     final_diff = collect_git_diff(repo, include_untracked=True)
+    changed_paths = _changed_paths(repo)
+    tests_after = _test_file_hashes(repo)
+    test_file_modified = tests_before != tests_after
+    allowed = set(task.editable_paths)
+    out_of_scope_write = bool(allowed and any(path not in allowed for path in changed_paths))
+    infrastructure_pass = initial_result.returncode != 0 and not test_file_modified and not out_of_scope_write
     runtime_metrics = empty_runtime_metrics()
     runtime_metrics.update(result.runtime_metrics)
     row = {
         "id": task.id,
         "title": task.title,
         "repo_path": str(repo),
-        "passed": pytest_result.passed,
+        "passed": infrastructure_pass and pytest_result.passed,
         "returncode": pytest_result.returncode,
         "elapsed_seconds": round(time.time() - started_at, 3),
         "test_command": task.test_command,
         "pytest_output": pytest_result.output,
+        "initial_pytest_output": initial_result.output,
+        "initial_returncode": initial_result.returncode,
+        "initial_failure_confirmed": initial_result.returncode != 0,
+        "infrastructure_pass": infrastructure_pass,
+        "test_file_modified": test_file_modified,
+        "out_of_scope_write": out_of_scope_write,
+        "changed_paths": sorted(changed_paths),
+        "editable_paths": list(task.editable_paths),
+        "retrieval_mode": retrieval_mode,
+        "relevant_file_hit_at_5": result.runtime_metrics.get("relevant_file_hit_at_5"),
         "transcript_path": str(result.transcript_path) if result.transcript_path else None,
         "raw_response": result.raw_response,
         "model_patch": final_diff,
@@ -178,6 +222,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model-name", default="firstcoder-local-pytest", help="Model name recorded in sessions.")
     parser.add_argument("--session-root", default=".firstcoder-local-pytest", help="Directory for benchmark sessions.")
     parser.add_argument("--force", action="store_true", help="Recreate existing task repositories.")
+    parser.add_argument("--retrieval-mode", choices=("baseline", "vector"), default="baseline")
     return parser
 
 
@@ -193,6 +238,7 @@ def main(argv: list[str] | None = None) -> int:
             model_name=args.model_name,
             session_root=args.session_root,
             force=args.force,
+            retrieval_mode=args.retrieval_mode,
         )
     except RuntimeError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -221,6 +267,31 @@ def _init_git_repo(repo: Path) -> None:
 
 def _run_git(args: list[str], repo: Path) -> None:
     subprocess.run(["git", *args], cwd=repo, check=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+
+
+def _test_file_hashes(repo: Path) -> dict[str, str]:
+    return {
+        path.relative_to(repo).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted((repo / "tests").rglob("*.py"))
+        if path.is_file()
+    }
+
+
+def _changed_paths(repo: Path) -> set[str]:
+    result = subprocess.run(
+        ["git", "status", "--short", "--untracked-files=all"],
+        cwd=repo,
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+    )
+    paths: set[str] = set()
+    for line in result.stdout.splitlines():
+        path = line[3:].strip()
+        if " -> " in path:
+            path = path.split(" -> ", 1)[1]
+        paths.add(path)
+    return paths
 
 
 def _split_command(command: str) -> list[str]:
