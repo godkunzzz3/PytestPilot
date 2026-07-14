@@ -1,6 +1,7 @@
 """工具定义、注册和执行入口。"""
 
 from firstcoder.tools.builtin import create_builtin_registry
+from firstcoder.tools.code_search import create_code_search_tool
 from firstcoder.tools.apply_patch import create_apply_patch_tool
 from firstcoder.tools.ask_user import create_ask_user_tool
 from firstcoder.tools.delete import create_delete_tool
@@ -34,6 +35,7 @@ __all__ = [
     "create_apply_patch_tool",
     "create_ask_user_tool",
     "create_builtin_registry",
+    "create_code_search_tool",
     "create_delete_tool",
     "create_diagnostics_tool",
     "create_edit_tool",
