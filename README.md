@@ -126,6 +126,12 @@ global:  ~/.config/firstcoder/config.toml
 project: ./firstcoder.toml
 ```
 
+### Provider Scope
+
+The current mainline targets OpenAI Chat Completions-compatible providers. It supports OpenAI-compatible 流式 responses, tool calling, usage normalization, and bounded `PROMPT_TOO_LONG` recovery. This scope does not claim support for the OpenAI Responses API, provider-specific reasoning, or 多模态 input.
+
+The Anthropic adapter is 实验性 and does not currently provide Anthropic 原生 thinking/cache/streaming behavior.
+
 ## TUI
 
 FirstCoder's TUI is designed to expose the agent loop instead of hiding it. You can see session state, streamed assistant output, tool calls, tool results, and permission prompts in one place.
