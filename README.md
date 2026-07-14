@@ -1,11 +1,11 @@
 <p align="center">
-  <img src="assets/firstcoder-logo.png" alt="FirstCoder logo" width="156">
+  <img src="assets/firstcoder-logo.png" alt="PytestPilot logo" width="156">
 </p>
 
-<h1 align="center">FirstCoder</h1>
+<h1 align="center">PytestPilot</h1>
 
 <p align="center">
-  <strong>A local Python coding agent built to make agent internals visible.</strong>
+  <strong>面向 Python/pytest CI 失败诊断与自动修复的可观测 Coding Agent。</strong>
 </p>
 
 <p align="center">
@@ -22,6 +22,66 @@
 </p>
 
 ---
+
+## 项目来源
+
+PytestPilot 基于开源项目
+[FirstCoder](https://github.com/KomorGiaoGiao/FirstCoder)
+进行二次开发。
+
+上游项目提供 Agent Loop、工具系统、权限控制、Session、
+Context Compaction 和本地 TUI 等基础运行时。
+
+本项目主要新增：
+
+- Python/pytest 失败日志结构化解析与稳定 Fingerprint；
+- pytest CI 自动诊断与修复 Workflow；
+- Python AST 代码切分与增量索引；
+- FastEmbed + Qdrant 本地代码语义检索；
+- `code_search` Tool；
+- 路径级 Source Read Policy；
+- 9 个可复现 pytest Benchmark；
+- Provider、Tool、Token、成本、Diff 和 Context 指标；
+- DeepSeek Flash 接入、SDK 零重试和请求级预算控制；
+- 受控 Baseline/Vector 配对实验。
+
+原项目的 MIT License 和版权声明予以保留，详见 [LICENSE](LICENSE) 和 [NOTICE.md](NOTICE.md)。
+
+## 实验结果
+
+### 9 题真实 Agent Benchmark
+
+首次真实实验：
+
+| 配置 | 通过率 |
+|---|---:|
+| Deterministic baseline | 7/9 |
+| Vector-enabled | 8/9 |
+
+该轮 Vector 运行未实际调用 `code_search`，因此两组差异不能归因于向量检索。
+
+### 受控语义任务配对实验
+
+对两个 `retrieval_required` 语义任务分别执行 3 次 Baseline 和
+3 次 Vector，共 12 次纳入比较的真实 Agent 运行。
+
+| 指标 | Baseline | Vector |
+|---|---:|---:|
+| 通过率 | 6/6 | 6/6 |
+| Input Tokens | 230,474 | 291,460 |
+| Output Tokens | 4,454 | 6,124 |
+| Provider Calls | 38 | 44 |
+| Tool Calls | 32 | 50 |
+| 平均耗时 | 11.94s | 14.05s |
+| 保守估算成本 | $0.0335 | $0.0425 |
+
+Vector 组 6 次纳入比较的运行均实际调用 `code_search`，Relevant File Hit@5 为 6/6，
+并完成 `code_search → source read → edit → pytest` 链路。
+
+当前小样本中两组通过率相同，Vector 增加了 Token、工具调用和运行时间。
+该实验验证了语义检索链路的可执行性，尚不能证明其提升修复通过率。两次初始
+Vector 运行因未调用 `code_search` 被审计器排除，并在策略加固后透明补跑；完整过程见
+[DeepSeek Benchmark 审计报告](docs/DEEPSEEK_BENCHMARK_AUDIT.md)。
 
 FirstCoder is a real, runnable local coding agent with a Textual TUI, tool calling, permissions, sessions, and context compaction. It is designed to be useful in daily work and easy to study in code.
 
