@@ -99,3 +99,13 @@
 - Qdrant 或向量组件不可用时，pytest Parser、确定性检索、Tool 和 Runner 的本地测试仍可运行；
 - 原始 Session 事实 append-only，compaction 仅改变 Provider 投影，tool call/result 配对、Replay 和 Resume 不变量不被破坏；
 - 最终交付包含修改文件、测试命令与结果、实际 Benchmark 数据、未获得数据及原因、已知限制、未完成项和可用于简历的项目描述。
+
+## 2026-07-14 实际状态
+
+- A–F 已实现：指标贯通、pytest Parser、AST 切分、FastEmbed、Qdrant local、`code_search`、`pytest-fix` CLI 和 9 个 Benchmark 任务。
+- 9 个任务均已在干净临时目录确认初始 pytest 非零退出；Evaluator 会拒绝测试文件修改和 editable scope 外写入。
+- Fake Provider 工作流已覆盖 `view → edit → focused pytest → full pytest`；所有 Provider 自动重试设为 0。
+- 本地缓存 `BAAI/bge-small-en-v1.5`（384 维）与临时 Qdrant 已验证。`parser_dispatch` 的 deterministic baseline Relevant-file Hit@5 为 false，vector 为 true；索引 0.038659 秒，查询 0.003597 秒。
+- `service_repository_contract` 的两种模式 Relevant-file Hit@5 均为 true；vector 索引 0.033658 秒，查询 0.006848 秒。
+- 上述数据是本地检索评估，不是模型修复通过率。真实百炼额度耗尽，因此未运行真实 Smoke Test、真实模型 Benchmark，也没有可报告的真实模型 pass rate 或 token usage。
+- 最终全量测试和交付审计属于阶段 G；只有实际运行后才能填写最终测试总数。

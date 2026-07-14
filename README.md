@@ -175,6 +175,55 @@ Run a focused test file:
 .venv/bin/python -m pytest tests/test_app_tui.py -q
 ```
 
+## Python/pytest Repair MVP
+
+The current MVP specializes FirstCoder for local Python/pytest failure repair. The flow is:
+
+```mermaid
+flowchart LR
+    A["pytest failure"] --> B["structured evidence"]
+    B --> C["deterministic candidates"]
+    C --> D["optional vector candidates"]
+    D --> E["fresh source read"]
+    E --> F["minimal edit"]
+    F --> G["focused and full pytest"]
+    G --> H["diff, transcript, metrics"]
+```
+
+Install the optional local-retrieval dependencies, then build the persistent index:
+
+```sh
+.venv/bin/python -m pip install -e ".[dev,retrieval]"
+.venv/bin/python -m firstcoder.cli index build --project .
+.venv/bin/python -m firstcoder.cli index status --project .
+# Use this after changing the embedding model or dimension:
+.venv/bin/python -m firstcoder.cli index rebuild --project .
+```
+
+Run the repair workflow after configuring an available provider:
+
+```sh
+.venv/bin/python -m firstcoder.cli pytest-fix \
+  --project . \
+  --test-command ".venv/bin/python -m pytest tests/test_example.py -q" \
+  --json-out runs/pytest-fix-result.json
+```
+
+The command performs at most two repair attempts by default and never retries a Provider request. If a local index is unavailable, structured pytest parsing and deterministic source candidates continue to work. Vector results are candidates only; the agent must read current source before editing it.
+
+The reproducible benchmark contains nine tasks. Its evaluator confirms the initial failure, rejects test edits and out-of-scope writes, and records Provider/Tool counts, actual usage (or `null`), estimated input tokens, context/archive metrics, elapsed time, final diff, and transcript path. Offline tests use Fake Provider, Fake Embedding, and Fake Vector Store:
+
+```sh
+.venv/bin/python -m pytest \
+  tests/test_local_pytest_benchmark.py \
+  tests/test_eval_adapter.py \
+  tests/test_ci_pytest_parser.py \
+  tests/test_retrieval.py \
+  tests/test_pytest_fix_workflow.py -q
+```
+
+See [the demo runbook](docs/PYTEST_FIX_DEMO_RUNBOOK.md) and [the one-week MVP scope](docs/MVP_GOAL.md). Do not run the default model-backed benchmark while its configured Provider has no quota; the test suite does not make real Provider requests.
+
 ## Philosophy
 
 FirstCoder was built to answer a question most coding agents do not address:
