@@ -9,64 +9,112 @@
 </p>
 
 <p align="center">
-  <a href="#quickstart"><img alt="Python" src="https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white"></a>
-  <a href="#tui"><img alt="Textual TUI" src="https://img.shields.io/badge/Textual-TUI-5B5BD6?style=flat-square"></a>
-  <a href="#configuration"><img alt="OpenAI Compatible" src="https://img.shields.io/badge/OpenAI-Compatible-111827?style=flat-square"></a>
-  <a href="#development"><img alt="pytest" src="https://img.shields.io/badge/pytest-tested-0A9EDC?style=flat-square&logo=pytest&logoColor=white"></a>
-  <a href="https://deepwiki.com/KomorGiaoGiao/FirstCoder"><img alt="Ask DeepWiki" src="https://img.shields.io/badge/Ask-DeepWiki-0F7BBF?style=flat-square&labelColor=2B2B2B"></a>
+  <a href="https://github.com/godkunzzz3/PytestPilot/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/godkunzzz3/PytestPilot/actions/workflows/ci.yml/badge.svg"></a>
+  <img alt="Python" src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white">
+  <img alt="Tests" src="https://img.shields.io/badge/tests-891%20passed-16a34a?logo=pytest&logoColor=white">
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-2563eb"></a>
 </p>
+
+PytestPilot 把 pytest 失败日志转成结构化证据，结合确定性定位与可选的本地语义检索，驱动 Agent 在读取真实源码后做最小修改，再以 focused/full pytest 双阶段验收。每次运行都可记录 Provider、Tool、Token、成本、Diff、Context 与耗时指标。
+
+```text
+pytest failure → structured diagnosis → deterministic/vector candidates
+→ source read → minimal patch → focused pytest → full pytest → metrics
+```
 
 <p align="center">
-  English
-  · <a href="README.zh-CN.md">简体中文</a>
+  <img src="docs/assets/pytestpilot-demo.png" alt="PytestPilot offline repair demo" width="1000">
 </p>
 
----
+上图来自真实本地离线运行：Fake Provider、Fake Embedding 和 Fake Vector Store 完成了 `view → edit → focused pytest → full pytest`，没有访问外部模型或网络服务。
 
-## 项目来源
+PytestPilot 基于 [FirstCoder](https://github.com/KomorGiaoGiao/FirstCoder) 二次开发，保留上游 MIT License 与原作者版权；归属详情见 [NOTICE.md](NOTICE.md)。
 
-PytestPilot 基于开源项目
-[FirstCoder](https://github.com/KomorGiaoGiao/FirstCoder)
-进行二次开发。
+## 核心能力
 
-上游项目提供 Agent Loop、工具系统、权限控制、Session、
-Context Compaction 和本地 TUI 等基础运行时。
+- pytest 文本日志结构化解析：失败 node id、异常/Assertion、源码位置与稳定 Fingerprint；
+- 有界 pytest 修复 Workflow：最多两次尝试，focused/full-test 双阶段验证；
+- Python AST 代码切分、content hash 与增量索引；
+- FastEmbed + Qdrant local 持久化语义检索及 `code_search` Tool；
+- 路径级 Source Read Policy：向量结果只生成候选，修改前必须重新读取当前源码；
+- 9 个离线、可复现的 pytest Benchmark，固定题目、命令、editable paths 与判分标准；
+- Provider/Tool/Token/成本/Diff/Context 指标，缺失 actual usage 时保持 `null`；
+- DeepSeek Flash OpenAI-compatible 接入、SDK 零重试与请求级预算预留；
+- 上游 Agent Loop、权限、append-only Session、Context Compaction 与本地 TUI。
 
-本项目主要新增：
+## 快速开始
 
-- Python/pytest 失败日志结构化解析与稳定 Fingerprint；
-- pytest CI 自动诊断与修复 Workflow；
-- Python AST 代码切分与增量索引；
-- FastEmbed + Qdrant 本地代码语义检索；
-- `code_search` Tool；
-- 路径级 Source Read Policy；
-- 9 个可复现 pytest Benchmark；
-- Provider、Tool、Token、成本、Diff 和 Context 指标；
-- DeepSeek Flash 接入、SDK 零重试和请求级预算控制；
-- 受控 Baseline/Vector 配对实验。
+需要 Python 3.11 或更高版本。克隆后先运行完全离线的开发测试：
 
-原项目的 MIT License 和版权声明予以保留，详见 [LICENSE](LICENSE) 和 [NOTICE.md](NOTICE.md)。
+```sh
+git clone https://github.com/godkunzzz3/PytestPilot.git
+cd PytestPilot
+python -m venv .venv
+.venv/bin/python -m pip install -e ".[dev]"
+.venv/bin/python -m pytest tests -q
+```
 
-## 实验结果
+本地语义检索是可选能力；安装后可建立 Qdrant local 索引：
+
+```sh
+.venv/bin/python -m pip install -e ".[dev,retrieval]"
+.venv/bin/firstcoder index build --project .
+.venv/bin/firstcoder index status --project .
+```
+
+模型与凭证配置完成后，运行 pytest 修复闭环：
+
+```sh
+.venv/bin/firstcoder pytest-fix \
+  --project /path/to/python-project \
+  --test-command "python -m pytest -q" \
+  --json-out runs/pytest-fix-result.json
+```
+
+`pytest-fix` 默认最多执行两次修复尝试，不重试 Provider 请求。Qdrant 不可用时，Parser 与确定性候选仍会继续工作。
+
+## 离线验证
+
+单元测试和集成测试使用 Fake Provider；CI 仅安装 `.[dev]`，不会下载 FastEmbed 模型、打开 Qdrant 数据库或发起真实 Provider 请求。
+
+```sh
+# Fake Provider 修复闭环
+.venv/bin/python -m pytest tests/test_pytest_fix_workflow.py -q
+
+# Parser、Retrieval、Benchmark 与指标
+.venv/bin/python -m pytest \
+  tests/test_ci_pytest_parser.py \
+  tests/test_retrieval.py \
+  tests/test_code_search_tool.py \
+  tests/test_local_pytest_benchmark.py \
+  tests/test_eval_adapter.py -q
+```
+
+当前本地完整验证结果为 **891 passed、2 skipped、0 failed**。GitHub Actions 在 Python 3.12 和 3.14 上运行同一条 `python -m pytest tests -q` 命令。
+
+## Benchmark 与诚实边界
 
 ### 9 题真实 Agent Benchmark
 
-首次真实实验：
+首次真实实验得到：
 
 | 配置 | 通过率 |
-|---|---:|
+| --- | ---: |
 | Deterministic baseline | 7/9 |
 | Vector-enabled | 8/9 |
 
-该轮 Vector 运行未实际调用 `code_search`，因此两组差异不能归因于向量检索。
+该轮 Vector 运行没有实际调用 `code_search`，因此 8/9 与 7/9 的差异不能归因于向量检索。
+
+### 离线检索验证
+
+两个 `retrieval_required` 语义任务使用本地 FastEmbed 与 Qdrant 重跑：Vector Relevant File Hit@5 为 **2/2**；deterministic baseline 为 **1/2**。这是候选检索结果，不是修复成功率。
 
 ### 受控语义任务配对实验
 
-对两个 `retrieval_required` 语义任务分别执行 3 次 Baseline 和
-3 次 Vector，共 12 次纳入比较的真实 Agent 运行。
+两个语义任务分别执行 3 次 Baseline 和 3 次 Vector，共 12 次纳入比较的真实 Agent 运行：
 
 | 指标 | Baseline | Vector |
-|---|---:|---:|
+| --- | ---: | ---: |
 | 通过率 | 6/6 | 6/6 |
 | Input Tokens | 230,474 | 291,460 |
 | Output Tokens | 4,454 | 6,124 |
@@ -75,226 +123,56 @@ Context Compaction 和本地 TUI 等基础运行时。
 | 平均耗时 | 11.94s | 14.05s |
 | 保守估算成本 | $0.0335 | $0.0425 |
 
-Vector 组 6 次纳入比较的运行均实际调用 `code_search`，Relevant File Hit@5 为 6/6，
-并完成 `code_search → source read → edit → pytest` 链路。
+Vector 组 6 次合规运行均实际调用 `code_search`，Relevant File Hit@5 为 6/6，并完成 `code_search → source read → edit → pytest`。两组通过率相同，且 Vector 使用了更多 Token、工具调用与时间；这验证了语义检索链路可执行，尚不能证明它提升修复通过率。
 
-当前小样本中两组通过率相同，Vector 增加了 Token、工具调用和运行时间。
-该实验验证了语义检索链路的可执行性，尚不能证明其提升修复通过率。两次初始
-Vector 运行因未调用 `code_search` 被审计器排除，并在策略加固后透明补跑；完整过程见
-[DeepSeek Benchmark 审计报告](docs/DEEPSEEK_BENCHMARK_AUDIT.md)。
+完整实验配置、排除项与成本对账见 [DeepSeek Benchmark 审计报告](docs/DEEPSEEK_BENCHMARK_AUDIT.md)。
 
-FirstCoder is a real, runnable local coding agent with a Textual TUI, tool calling, permissions, sessions, and context compaction. It is designed to be useful in daily work and easy to study in code.
+## Provider 与预算
 
-If you want to understand how coding agents actually work, FirstCoder keeps the moving parts visible instead of hiding them behind a black box.
+DeepSeek preset 使用官方 OpenAI-compatible endpoint，模型为 `deepseek-v4-flash`，默认 thinking disabled、temperature 0、最大输出 4096，并关闭 OpenAI SDK retry。凭证只从 `DEEPSEEK_API_KEY` 环境变量读取。
 
-- Learn the agent loop, tool calling, permissions, sessions, and context handling.
-- Build on a small Python codebase with clear module boundaries.
-- Use a local coding agent while still being able to inspect how it works.
+当前主线面向 OpenAI Chat Completions-compatible Provider，支持 OpenAI-compatible 流式响应、Tool Calling、usage 标准化和有界 `PROMPT_TOO_LONG` 恢复；不声称支持 OpenAI Responses API、Provider-specific reasoning 或多模态输入。Anthropic adapter 仍是实验性实现，当前不提供 Anthropic 原生 thinking/cache/streaming 行为。
 
-![FirstCoder TUI ready state](docs/images/firstcoder-ready.png)
+受审计 Benchmark 在每次请求前估算输入、应用 1.20 安全系数、按最大输出预留预算，并在 usage 返回后对账；usage 缺失会停止后续请求。该机制降低超支风险，但不能保证供应商最终账单。Thinking-mode Tool Calling 与 `reasoning_content` 回传尚未实现。
 
-## Why FirstCoder
+真实模型命令只应在明确确认凭证、额度与预算后运行。日常开发、CI 和本 README 中的离线验证均不需要 API Key。
 
-Most coding-agent demos show the surface: a prompt goes in, code changes come out. FirstCoder focuses on the machinery in between.
-
-Compared with larger projects like OpenCode, FirstCoder is intentionally smaller in scope.
-
-| Dimension | FirstCoder | Larger projects like OpenCode |
-| --- | --- | --- |
-| Primary goal | Make agent internals readable and teachable | Deliver a broader production-style coding-agent platform |
-| Codebase shape | Roughly 17k lines of Python runtime code in this repo | Roughly 575k lines of TS/JS across a much larger multi-surface codebase |
-| Engineering tradeoff | Drops some extra platform surface area to stay inspectable | Accepts more complexity to support a broader product surface |
-| Best fit | Learning, modification, interview prep, portfolio projects, and local experimentation | Users who want a larger, more full-surface coding-agent environment |
-
-The goal is not to out-feature a bigger coding agent. The goal is to keep the system real enough to use, but small enough that you can still read it end to end and understand why each subsystem exists.
-
-That also makes FirstCoder a practical repo to study deeply, adapt for your own workflow, and turn into a resume-worthy or portfolio-friendly project after you have extended it.
-
-Compared with more tutorial-first or lightweight learning repos, FirstCoder also tries to stay closer to a small but testable engineering system.
-
-| Dimension | FirstCoder | Many learning-oriented agent repos |
-| --- | --- | --- |
-| Learning value | Readable subsystem boundaries and explicit docs | Often optimized for a single tutorial path or demo flow |
-| Practical surface | Real TUI, tools, permissions, sessions, provider adapters | Often focused on a narrower loop or a simpler proof of concept |
-| Verification | 80+ test files and multiple benchmark entry points | Often lighter on testing and benchmark integration |
-| Extension path | Easier to adapt into a portfolio or resume project | Often better for following along than for long-term extension |
-
-In this repo, the learning goal is important, but it is paired with enough runtime structure, tests, and benchmark hooks to make the project useful after the first read-through.
-
-It is built for people who want to:
-
-- study how a coding agent is assembled
-- modify or extend a local Python implementation
-- understand the architecture well enough to explain it in an interview
-
-Detailed subsystem design lives in the docs, not in this README.
-
-## Quickstart
-
-Install with `pipx`:
-
-```sh
-pipx install firstcoder
-```
-
-Start the TUI:
-
-```sh
-firstcoder
-```
-
-Run one message without opening the TUI:
-
-```sh
-firstcoder --message "Summarize this repository in one paragraph"
-```
-
-Use line-oriented interactive mode:
-
-```sh
-firstcoder --interactive
-```
-
-## What You Get
-
-- Local Python coding agent
-- Textual TUI that exposes agent activity instead of hiding it
-- Tool calling with permission checks before risky actions
-- Session persistence, resume flow, and context compaction
-- Skills, provider adapters, and clean modules for study and modification
-
-## Configuration
-
-Create a starter config:
-
-```sh
-firstcoder config init
-firstcoder config path
-firstcoder config show
-```
-
-Keep secrets in environment variables:
-
-```sh
-export FIRSTCODER_API_KEY="your-api-key"
-```
-
-Default config locations:
-
-```text
-global:  ~/.config/firstcoder/config.toml
-project: ./firstcoder.toml
-```
-
-### Provider Scope
-
-The current mainline targets OpenAI Chat Completions-compatible providers. It supports OpenAI-compatible 流式 responses, tool calling, usage normalization, and bounded `PROMPT_TOO_LONG` recovery. This scope does not claim support for the OpenAI Responses API, provider-specific reasoning, or 多模态 input.
-
-The Anthropic adapter is 实验性 and does not currently provide Anthropic 原生 thinking/cache/streaming behavior.
-
-## TUI
-
-FirstCoder's TUI is designed to expose the agent loop instead of hiding it. You can see session state, streamed assistant output, tool calls, tool results, and permission prompts in one place.
-
-Empty session:
-
-![FirstCoder empty TUI](docs/images/tui-empty.png)
-
-Tool calls appear in the conversation flow:
-
-![FirstCoder tool calls](docs/images/tui-tools.png)
-
-Permission requests pause the agent until the user decides:
-
-![FirstCoder permission request](docs/images/tui-permission.png)
-
-## Documentation
-
-- [Technical Docs Index](docs/README.md)
-- [Chinese Docs Index](docs/README.zh-CN.md)
-- [Codebase Reading Guide](docs/CODEBASE_READING_GUIDE.md)
-
-## Development
-
-Install dev dependencies:
-
-```sh
-python -m venv .venv
-.venv/bin/python -m pip install -e ".[dev]"
-```
-
-Run all tests:
-
-```sh
-.venv/bin/python -m pytest
-```
-
-Run a focused test file:
-
-```sh
-.venv/bin/python -m pytest tests/test_app_tui.py -q
-```
-
-## Python/pytest Repair MVP
-
-The current MVP specializes FirstCoder for local Python/pytest failure repair. The flow is:
+## 架构边界
 
 ```mermaid
 flowchart LR
-    A["pytest failure"] --> B["structured evidence"]
-    B --> C["deterministic candidates"]
-    C --> D["optional vector candidates"]
-    D --> E["fresh source read"]
-    E --> F["minimal edit"]
-    F --> G["focused and full pytest"]
-    G --> H["diff, transcript, metrics"]
+    CI["pytest parser"] --> Workflow["repair workflow"]
+    Workflow --> Runtime["agent runtime"]
+    Workflow --> Retrieval["AST + embeddings + vector store"]
+    Runtime --> Tools["view / edit / pytest / code_search"]
+    Runtime --> Session["append-only session + metrics"]
+    Retrieval --> FastEmbed["FastEmbed local"]
+    Retrieval --> Qdrant["Qdrant local"]
 ```
 
-Install the optional local-retrieval dependencies, then build the persistent index:
+核心不变量：原始 Session 事实 append-only；Context Compaction 只改变 Provider 投影；向量索引副本不能直接作为编辑依据；Qdrant 不可用时确定性路径 fail-open；actual token 与 estimated token 分开记录。
 
-```sh
-.venv/bin/python -m pip install -e ".[dev,retrieval]"
-.venv/bin/firstcoder index build --project .
-.venv/bin/firstcoder index status --project .
-# Use this after changing the embedding model or dimension:
-.venv/bin/firstcoder index rebuild --project .
-```
+## 当前范围
 
-Run the repair workflow after configuring an available provider:
+当前只支持 Python 仓库、pytest 文本日志和本地索引。暂不包含多 Agent、多语言、reranker、云 Qdrant、Thinking-mode Tool Calling、完整 FreshSourceGuard 或大规模 SWE-bench。项目不声称向量检索已提升修复成功率。
 
-```sh
-.venv/bin/firstcoder pytest-fix \
-  --project . \
-  --test-command ".venv/bin/python -m pytest tests/test_example.py -q" \
-  --json-out runs/pytest-fix-result.json
-```
+## 项目来源
 
-The command performs at most two repair attempts by default and never retries a Provider request. If a local index is unavailable, structured pytest parsing and deterministic source candidates continue to work. Vector results are candidates only; the agent must read current source before editing it.
+PytestPilot 基于开源项目 [FirstCoder](https://github.com/KomorGiaoGiao/FirstCoder) 进行二次开发。上游项目提供 Agent Loop、工具系统、权限控制、Session、Context Compaction 和本地 TUI 等基础运行时。
 
-The DeepSeek preset uses the official OpenAI-compatible endpoint, reads credentials only from `DEEPSEEK_API_KEY`, and defaults to `deepseek-v4-flash` with thinking disabled, temperature 0, a 4096-token output cap, and OpenAI SDK retries disabled. Thinking-mode tool calling and `reasoning_content` round-trip are intentionally deferred.
+本项目主要新增 pytest 失败解析与修复 Workflow、AST/FastEmbed/Qdrant 检索、`code_search`、Source Read Policy、9 题 Benchmark、完整指标、DeepSeek Flash 接入、请求预算及受控配对实验。
 
-The audited DeepSeek benchmark path adds a shared request-boundary budget: before each request it estimates prompt tokens, applies a 1.20 safety factor, reserves the configured maximum output, and charges all input at the cache-miss rate. Actual usage is reconciled after the response; missing usage stops later requests. This reduces overspend risk but cannot guarantee the provider's final invoice. Benchmark sessions load no global skills, exclude `ask_user`, require exact source reads before edits, and require `code_search → view/read_multi` for retrieval-required Vector tasks.
+原项目的 MIT License 和版权声明予以保留，详见 [LICENSE](LICENSE) 与 [NOTICE.md](NOTICE.md)。
 
-The reproducible benchmark contains nine tasks. Its evaluator confirms the initial failure, rejects test edits and out-of-scope writes, and records Provider/Tool counts, actual usage (or `null`), estimated input tokens, context/archive metrics, elapsed time, final diff, and transcript path. Offline tests use Fake Provider, Fake Embedding, and Fake Vector Store:
+## 文档
 
-```sh
-.venv/bin/python -m pytest \
-  tests/test_local_pytest_benchmark.py \
-  tests/test_eval_adapter.py \
-  tests/test_ci_pytest_parser.py \
-  tests/test_retrieval.py \
-  tests/test_pytest_fix_workflow.py -q
-```
+- [pytest 修复演示手册](docs/PYTEST_FIX_DEMO_RUNBOOK.md)
+- [DeepSeek Benchmark 审计报告](docs/DEEPSEEK_BENCHMARK_AUDIT.md)
+- [一周 MVP 范围与验收](docs/MVP_GOAL.md)
+- [技术文档索引](docs/README.md)
+- [中文文档索引](docs/README.zh-CN.md)
+- [代码库阅读指南](docs/CODEBASE_READING_GUIDE.md)
 
-The 2026-07-14 controlled two-task sample produced 6/6 Baseline and 6/6 policy-compliant Vector passes. Vector made six actual `code_search` calls and re-read candidates, but the equal pass rates do not show an accuracy improvement; Vector used more tokens and time in this tiny sample. Two initial Vector runs that skipped `code_search` were excluded and transparently rerun after the policy gate was enforced. Total new conservative cost, including Smoke and excluded runs, was `$0.08710954` under the `$0.25` limit.
+## License
 
-See [the DeepSeek benchmark audit](docs/DEEPSEEK_BENCHMARK_AUDIT.md), [the demo runbook](docs/PYTEST_FIX_DEMO_RUNBOOK.md), and [the one-week MVP scope](docs/MVP_GOAL.md). Do not run a model-backed benchmark without explicit quota authorization and the request-budget wrapper; the test suite does not make real Provider requests.
-
-## Philosophy
-
-FirstCoder was built to answer a question most coding agents do not address:
-
-> What actually happens inside when an agent streams, calls tools, asks for
-> permission, compacts context, and resumes a session?
-
-It is a real runnable agent, but it is also a readable Python project you can learn from one subsystem at a time.
+本项目沿用上游 [MIT License](LICENSE)。衍生项目归属与修改版权说明见 [NOTICE.md](NOTICE.md)。
