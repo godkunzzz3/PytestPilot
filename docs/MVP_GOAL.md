@@ -108,4 +108,4 @@
 - 本地缓存 `BAAI/bge-small-en-v1.5`（384 维）与临时 Qdrant 已验证。`parser_dispatch` 的 deterministic baseline Relevant-file Hit@5 为 false，vector 为 true；索引 0.038659 秒，查询 0.003597 秒。
 - `service_repository_contract` 的两种模式 Relevant-file Hit@5 均为 true；vector 索引 0.033658 秒，查询 0.006848 秒。
 - 上述数据是本地检索评估，不是模型修复通过率。真实百炼额度耗尽，因此未运行真实 Smoke Test、真实模型 Benchmark，也没有可报告的真实模型 pass rate 或 token usage。
-- 最终全量测试和交付审计属于阶段 G；只有实际运行后才能填写最终测试总数。
+- 阶段 G 最终完整测试：`.venv/bin/python -m pytest tests -q` 在隔离 Provider 环境下得到 853 passed、2 skipped、0 failed（36.26 秒）；另行启用缓存 FastEmbed 集成测试得到 1 passed（0.67 秒）。
