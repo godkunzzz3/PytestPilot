@@ -19,7 +19,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest"]
+dev = ["pytest", "evalplus"]
+retrieval = ["qdrant-client[fastembed]"]
 
 [project.scripts]
 firstcoder = "firstcoder.cli:main"

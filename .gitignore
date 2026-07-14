@@ -1,4 +1,6 @@
 .venv/
+.venv-*/
+.DS_Store
 __pycache__/
 *.py[cod]
 *.pyo
@@ -12,6 +14,7 @@ htmlcov/
 AGENTS.md
 agent.md
 agents.md
+!/AGENTS.md
 text/
 *.log
 dist/
