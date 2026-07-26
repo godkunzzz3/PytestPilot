@@ -26,6 +26,7 @@ from firstcoder.providers.errors import ProviderError
 from firstcoder.providers.factory import create_provider
 from firstcoder.providers.types import ChatRequest, ChatResponse, ChatStreamEvent, ToolChoiceFunction
 from firstcoder.tools.builtin import create_builtin_registry
+from firstcoder.tools.fresh_source import FreshSourceGuard
 from firstcoder.tools.types import Tool
 from firstcoder.utils.sandbox_access import SandboxAccess
 
@@ -115,6 +116,12 @@ class FirstCoderCodingAgentAdapter:
 
     def _create_loop(self, task: CodingTask, session_root: Path) -> AgentLoop:
         sandbox_access = SandboxAccess()
+        fresh_source_guard = None
+        if task.metadata.get("enforce_fresh_source_guard"):
+            fresh_source_guard = FreshSourceGuard(
+                task.repo_path,
+                editable_paths=task.metadata.get("editable_paths") or (),
+            )
         registry = create_builtin_registry(
             task.repo_path,
             include_mutation_tools=True,
@@ -122,6 +129,9 @@ class FirstCoderCodingAgentAdapter:
             include_network_tools=False,
             include_interactive_tools=False,
             access=sandbox_access,
+            fresh_source_guard=fresh_source_guard,
+            execution_backend=task.metadata.get("execution_backend"),
+            resource_limits=task.metadata.get("resource_limits"),
         )
         task_tools = [*self.extra_tools]
         if self.extra_tools_factory is not None:
@@ -298,6 +308,8 @@ def _build_task_prompt(task: CodingTask) -> str:
         "Use the diagnostics tool for pytest so it runs with FirstCoder's active Python environment. "
         "Start with stack-trace paths, the failing test module, exact symbols, and grep. "
         "Before changing an existing file, read that exact file with view or read_multi. "
+        "When a source read returns a read_token, pass that token to edit/write/delete; "
+        "for apply_patch pass a read_tokens mapping keyed by every existing path. "
         "When this task is marked retrieval_required and code_search is available, call code_search before the first "
         "mutation, then read at least one returned candidate with view or read_multi. If code_search is unavailable, "
         "continue with deterministic grep/glob/view tools without asking the user. Never access /workspace. "

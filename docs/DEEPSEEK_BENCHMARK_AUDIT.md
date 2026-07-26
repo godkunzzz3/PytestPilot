@@ -37,7 +37,7 @@ Streaming 只在最终 `message_completed` usage 提交一次。准确边界是�
 
 ## 路径级 source-read 与 retrieval policy
 
-Evaluator 按 Transcript 执行顺序提取 `view/read_multi` 与 `edit/write/delete/apply_patch` 的规范化路径。每个既有被修改文件必须在首次修改前被准确读取；新文件、越界路径、未读路径和 stale-read 字段分别输出。测试文件修改和 editable scope 外写入仍直接失败。本轮没有实现运行时 FreshSourceGuard；`stale_read_paths` 预留但尚未做内容 hash 对比。
+Evaluator 按 Transcript 执行顺序提取 `view/read_multi` 与 `edit/write/delete/apply_patch` 的规范化路径。每个既有被修改文件必须在首次修改前被准确读取；新文件、越界路径、未读路径和 stale-read 字段分别输出。测试文件修改和 editable scope 外写入仍直接失败。该次历史 Benchmark 尚未实现运行时 FreshSourceGuard；2026-07-25 后的 `pytest-fix` 已增加基于 path、SHA-256、TTL 和一次性 read token 的 Runtime 强制校验，旧结果不追溯重标。
 
 Baseline 不注册 `code_search`。Vector 的 retrieval-required 任务注册该 Tool，并通过通用首 Tool 约束在第一次请求强制选择它；这段逻辑位于 Benchmark Provider 装饰层，不修改 AgentLoop，也不包含 DeepSeek 分支。向量 preview 不算 source read，必须再次 `view/read_multi`。
 

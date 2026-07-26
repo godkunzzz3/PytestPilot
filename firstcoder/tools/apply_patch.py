@@ -7,6 +7,7 @@ from pathlib import Path
 
 from firstcoder.permissions.types import PermissionAction
 from firstcoder.tools.types import Tool, ToolPermissionSpec, ToolResult, make_error_result, make_text_result
+from firstcoder.tools.fresh_source import FreshSourceGuard, FreshSourceViolation
 from firstcoder.utils.introspection import tool_from_function
 from firstcoder.utils.sandbox import PathSandbox
 from firstcoder.utils.sandbox_access import SandboxAccess
@@ -43,19 +44,28 @@ class PatchPlan:
     operations: list[PatchOperation]
 
 
-def create_apply_patch_tool(root: str | Path, *, access: SandboxAccess | None = None) -> Tool:
+def create_apply_patch_tool(
+    root: str | Path,
+    *,
+    access: SandboxAccess | None = None,
+    fresh_source_guard: FreshSourceGuard | None = None,
+) -> Tool:
     """创建多文件文本补丁工具。"""
 
     sandbox = PathSandbox(root, access=access)
 
-    def apply_patch(patch: str, dry_run: bool = False) -> ToolResult:
+    def apply_patch(patch: str, dry_run: bool = False, read_tokens: dict = None) -> ToolResult:
         """按 patch 语法新增、更新、删除或移动项目内文本文件。"""
 
         try:
             plan = parse_patch(patch)
+            consumed_tokens = _validate_fresh_patch(fresh_source_guard, sandbox, plan, read_tokens or {})
             outcome = _apply_plan(sandbox, plan, dry_run=dry_run)
-        except ValueError as exc:
+        except (ValueError, FreshSourceViolation) as exc:
             return make_error_result("apply_patch", str(exc))
+        if fresh_source_guard is not None and not dry_run:
+            for token in consumed_tokens:
+                fresh_source_guard.consume(token)
 
         return make_text_result(
             "apply_patch",
@@ -76,6 +86,28 @@ def create_apply_patch_tool(root: str | Path, *, access: SandboxAccess | None = 
         allow_auto=False,
     )
     return tool
+
+
+def _validate_fresh_patch(
+    guard: FreshSourceGuard | None,
+    sandbox: PathSandbox,
+    plan: PatchPlan,
+    read_tokens: dict,
+) -> list[str]:
+    if guard is None:
+        return []
+    consumed: list[str] = []
+    for operation in plan.operations:
+        target = sandbox.resolve(operation.path)
+        if operation.action == "add":
+            guard.validate_new(operation.path)
+        else:
+            token = str(read_tokens.get(operation.path) or "")
+            guard.validate_existing(operation.path, token)
+            consumed.append(token)
+        if operation.move_to:
+            guard.validate_new(operation.move_to)
+    return consumed
 
 
 def _permission_target_for_patch(arguments: dict[str, object]) -> str:

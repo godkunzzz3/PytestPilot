@@ -6,17 +6,29 @@ from pathlib import Path
 
 from firstcoder.permissions.types import PermissionAction
 from firstcoder.tools.types import Tool, ToolPermissionSpec, ToolResult, make_error_result, make_text_result
+from firstcoder.tools.fresh_source import FreshSourceGuard, FreshSourceViolation
 from firstcoder.utils.introspection import tool_from_function
 from firstcoder.utils.sandbox import PathSandbox
 from firstcoder.utils.sandbox_access import SandboxAccess
 
 
-def create_write_tool(root: str | Path, *, access: SandboxAccess | None = None) -> Tool:
+def create_write_tool(
+    root: str | Path,
+    *,
+    access: SandboxAccess | None = None,
+    fresh_source_guard: FreshSourceGuard | None = None,
+) -> Tool:
     """创建写入文本文件的工具。"""
 
     sandbox = PathSandbox(root, access=access)
 
-    def write(path: str, content: str, create_dirs: bool = True, overwrite: bool = True) -> ToolResult:
+    def write(
+        path: str,
+        content: str,
+        create_dirs: bool = True,
+        overwrite: bool = True,
+        read_token: str = "",
+    ) -> ToolResult:
         """写入项目内 UTF-8 文本文件；可创建目录或覆盖文件。"""
 
         target = sandbox.resolve(path)
@@ -24,6 +36,14 @@ def create_write_tool(root: str | Path, *, access: SandboxAccess | None = None) 
             return make_error_result("write", f"路径是目录，不能写入文件：{path}")
         if target.exists() and not overwrite:
             return make_error_result("write", f"文件已存在且 overwrite 为 False：{path}")
+        if fresh_source_guard is not None:
+            try:
+                if target.exists():
+                    fresh_source_guard.validate_existing(path, read_token)
+                else:
+                    fresh_source_guard.validate_new(path)
+            except FreshSourceViolation as exc:
+                return make_error_result("write", f"FreshSourceGuard: {exc}", path=path)
 
         parent = target.parent
         if not parent.exists():
@@ -33,6 +53,8 @@ def create_write_tool(root: str | Path, *, access: SandboxAccess | None = None) 
 
         created = not target.exists()
         target.write_text(content, encoding="utf-8")
+        if fresh_source_guard is not None and read_token:
+            fresh_source_guard.consume(read_token)
         return make_text_result(
             "write",
             f"已写入文件：{sandbox.relative(target)}",

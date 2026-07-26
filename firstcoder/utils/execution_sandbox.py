@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import os
+import shlex
 from pathlib import Path
 
 from firstcoder.agent.cancellation import current_cancellation_token
+from firstcoder.execution import ExecutionBackend, ResourceLimits
 from firstcoder.utils.sandbox_access import SandboxAccess
 from firstcoder.utils.sandbox import PathSandbox
 from firstcoder.utils.subprocess import CommandResult, run_command
@@ -21,9 +23,18 @@ class ExecutionSandbox:
     a command may run; this class constrains how approved subprocesses run.
     """
 
-    def __init__(self, root: str | Path, *, access: SandboxAccess | None = None) -> None:
+    def __init__(
+        self,
+        root: str | Path,
+        *,
+        access: SandboxAccess | None = None,
+        backend: ExecutionBackend | None = None,
+        resource_limits: ResourceLimits | None = None,
+    ) -> None:
         self.path_sandbox = PathSandbox(root, access=access)
         self.root = self.path_sandbox.root
+        self.backend = backend
+        self.resource_limits = resource_limits
 
     def resolve_cwd(self, cwd: str | Path | None = ".") -> Path:
         return self.path_sandbox.resolve_validated(cwd, expect="dir")
@@ -60,6 +71,21 @@ class ExecutionSandbox:
                 ok=False,
                 error=str(exc),
             )
+        if self.backend is not None:
+            args = ["/bin/sh", "-lc", command] if isinstance(command, str) and shell else (
+                shlex.split(command) if isinstance(command, str) else list(command)
+            )
+            base = self.resource_limits or ResourceLimits()
+            limits = ResourceLimits(
+                timeout_seconds=timeout_seconds,
+                cpu_count=base.cpu_count,
+                memory_mb=base.memory_mb,
+                pids=base.pids,
+                max_output_chars=max_output_chars,
+                max_file_size_mb=base.max_file_size_mb,
+                tmpfs_mb=base.tmpfs_mb,
+            )
+            return self.backend.run(args, workdir, limits)
         return run_command(
             command,
             cwd=workdir,

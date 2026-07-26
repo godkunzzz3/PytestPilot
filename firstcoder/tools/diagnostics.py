@@ -7,16 +7,28 @@ import sys
 from pathlib import Path
 
 from firstcoder.ci.pytest_parser import parse_pytest_output
+from firstcoder.execution import ExecutionBackend, ResourceLimits
 from firstcoder.tools.types import Tool, ToolResult, make_error_result, make_text_result
 from firstcoder.utils.introspection import tool_from_function
 from firstcoder.utils.execution_sandbox import ExecutionSandbox
 from firstcoder.utils.sandbox_access import SandboxAccess
 
 
-def create_diagnostics_tool(root: str | Path, *, access: SandboxAccess | None = None) -> Tool:
+def create_diagnostics_tool(
+    root: str | Path,
+    *,
+    access: SandboxAccess | None = None,
+    execution_backend: ExecutionBackend | None = None,
+    resource_limits: ResourceLimits | None = None,
+) -> Tool:
     """创建项目诊断工具。"""
 
-    sandbox = ExecutionSandbox(root, access=access)
+    sandbox = ExecutionSandbox(
+        root,
+        access=access,
+        backend=execution_backend,
+        resource_limits=resource_limits,
+    )
 
     def diagnostics(command: str = "python -m pytest -q", timeout_seconds: int = 120, max_output_chars: int = 20000) -> ToolResult:
         """运行项目诊断命令，适合测试、lint、类型检查。"""
@@ -26,7 +38,11 @@ def create_diagnostics_tool(root: str | Path, *, access: SandboxAccess | None = 
         if max_output_chars <= 0:
             return make_error_result("diagnostics", "max_output_chars 必须大于 0")
 
-        normalized_command = command.replace("python", sys.executable, 1) if command.startswith("python ") else command
+        normalized_command = (
+            command
+            if execution_backend is not None
+            else command.replace("python", sys.executable, 1) if command.startswith("python ") else command
+        )
         result = sandbox.run(
             normalized_command,
             cwd=".",

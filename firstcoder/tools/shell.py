@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 from firstcoder.permissions.types import PermissionAction
+from firstcoder.execution import ExecutionBackend, ResourceLimits
 from firstcoder.tools.types import Tool, ToolPermissionSpec, ToolResult, make_error_result, make_text_result
 from firstcoder.utils.introspection import tool_from_function
 from firstcoder.utils.execution_sandbox import ExecutionSandbox
@@ -16,13 +17,24 @@ DEFAULT_TIMEOUT_SECONDS = 30
 DEFAULT_MAX_OUTPUT_CHARS = 20000
 
 
-def create_shell_tool(root: str | Path, *, access: SandboxAccess | None = None) -> Tool:
+def create_shell_tool(
+    root: str | Path,
+    *,
+    access: SandboxAccess | None = None,
+    execution_backend: ExecutionBackend | None = None,
+    resource_limits: ResourceLimits | None = None,
+) -> Tool:
     """创建命令执行工具。
 
     这是高风险工具：调用方必须在用户明确开启执行权限后才能注册它。
     """
 
-    sandbox = ExecutionSandbox(root, access=access)
+    sandbox = ExecutionSandbox(
+        root,
+        access=access,
+        backend=execution_backend,
+        resource_limits=resource_limits,
+    )
 
     def shell(
         command: str,

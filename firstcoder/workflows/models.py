@@ -32,23 +32,31 @@ class PytestCommandResult:
 @dataclass(frozen=True, slots=True)
 class PytestFixAttempt:
     number: int
+    base_commit: str | None
+    attempt_patch: str
     deterministic_candidates: list[str]
     semantic_candidates: list[dict[str, Any]]
     transcript_path: str | None
     focused_result: PytestCommandResult
     full_result: PytestCommandResult | None
     source_read_policy_violation: bool
+    introduced_failures: list[str] = field(default_factory=list)
+    selected: bool = False
     runtime_metrics: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "number": self.number,
+            "base_commit": self.base_commit,
+            "attempt_patch": self.attempt_patch,
             "deterministic_candidates": self.deterministic_candidates,
             "semantic_candidates": self.semantic_candidates,
             "transcript_path": self.transcript_path,
             "focused_result": self.focused_result.to_dict(),
             "full_result": self.full_result.to_dict() if self.full_result is not None else None,
             "source_read_policy_violation": self.source_read_policy_violation,
+            "introduced_failures": self.introduced_failures,
+            "selected": self.selected,
             "runtime_metrics": self.runtime_metrics,
         }
 
