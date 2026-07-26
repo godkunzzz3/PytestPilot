@@ -27,6 +27,8 @@ from firstcoder.tools.view import create_view_tool
 from firstcoder.tools.web_search import create_web_search_tool
 from firstcoder.tools.write import create_write_tool
 from firstcoder.tools.descriptions import apply_agent_tool_description
+from firstcoder.tools.fresh_source import FreshSourceGuard
+from firstcoder.execution import ExecutionBackend, ResourceLimits
 from firstcoder.utils.sandbox_access import SandboxAccess
 
 
@@ -37,6 +39,9 @@ def create_builtin_registry(
     include_network_tools: bool = False,
     include_interactive_tools: bool = True,
     access: SandboxAccess | None = None,
+    fresh_source_guard: FreshSourceGuard | None = None,
+    execution_backend: ExecutionBackend | None = None,
+    resource_limits: ResourceLimits | None = None,
 ) -> ToolRegistry:
     """创建第一阶段默认可用工具。
 
@@ -45,16 +50,21 @@ def create_builtin_registry(
 
     tools = [
         create_ls_tool(root, access=access),
-        create_view_tool(root, access=access),
+        create_view_tool(root, access=access, fresh_source_guard=fresh_source_guard),
         create_grep_tool(root, access=access),
         create_glob_tool(root, access=access),
         create_tree_tool(root, access=access),
         create_git_status_tool(root, access=access),
         create_git_diff_tool(root, access=access),
         create_git_log_tool(root, access=access),
-        create_diagnostics_tool(root, access=access),
+        create_diagnostics_tool(
+            root,
+            access=access,
+            execution_backend=execution_backend,
+            resource_limits=resource_limits,
+        ),
         create_think_tool(),
-        create_read_multi_tool(root, access=access),
+        create_read_multi_tool(root, access=access, fresh_source_guard=fresh_source_guard),
         create_todo_tool(),
     ]
     if include_interactive_tools:
@@ -62,17 +72,27 @@ def create_builtin_registry(
     if include_mutation_tools:
         tools.extend(
             [
-                create_write_tool(root, access=access),
-                create_edit_tool(root, access=access),
-                create_delete_tool(root, access=access),
-                create_apply_patch_tool(root, access=access),
+                create_write_tool(root, access=access, fresh_source_guard=fresh_source_guard),
+                create_edit_tool(root, access=access, fresh_source_guard=fresh_source_guard),
+                create_delete_tool(root, access=access, fresh_source_guard=fresh_source_guard),
+                create_apply_patch_tool(root, access=access, fresh_source_guard=fresh_source_guard),
             ]
         )
     if include_execution_tools:
         tools.extend(
             [
-                create_shell_tool(root, access=access),
-                create_python_exec_tool(root, access=access),
+                create_shell_tool(
+                    root,
+                    access=access,
+                    execution_backend=execution_backend,
+                    resource_limits=resource_limits,
+                ),
+                create_python_exec_tool(
+                    root,
+                    access=access,
+                    execution_backend=execution_backend,
+                    resource_limits=resource_limits,
+                ),
             ]
         )
     if include_network_tools:

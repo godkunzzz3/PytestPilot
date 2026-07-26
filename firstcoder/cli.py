@@ -77,6 +77,19 @@ def build_parser() -> argparse.ArgumentParser:
     fix_parser.add_argument("--failure-log", default=None)
     fix_parser.add_argument("--max-attempts", type=_positive_int, default=2)
     fix_parser.add_argument("--json-out", default="runs/pytest-fix-result.json")
+    fix_parser.add_argument(
+        "--execution-backend",
+        choices=("docker", "local"),
+        default="docker",
+        help="Use Docker for untrusted projects; local is trusted-only.",
+    )
+    fix_parser.add_argument("--docker-image", default="firstcoder-pytest-sandbox:py311")
+    fix_parser.add_argument("--timeout-seconds", type=_positive_int, default=300)
+    fix_parser.add_argument("--cpu-count", type=float, default=1.0)
+    fix_parser.add_argument("--memory-mb", type=_positive_int, default=1024)
+    fix_parser.add_argument("--pids-limit", type=_positive_int, default=128)
+    fix_parser.add_argument("--max-output-chars", type=_positive_int, default=100000)
+    fix_parser.add_argument("--max-file-size-mb", type=_positive_int, default=64)
 
     parser.add_argument("--project", default=".", help="Project root for tools and AGENTS.md.")
     parser.add_argument("--data-root", default=None, help="Directory for FirstCoder session data.")
@@ -277,6 +290,7 @@ def run_index_command(args: argparse.Namespace) -> int:
 
 
 def run_pytest_fix_command(args: argparse.Namespace) -> int:
+    from firstcoder.execution import DockerSandboxBackend, LocalProcessBackend, ResourceLimits
     from firstcoder.retrieval import (
         FastEmbedProvider,
         QdrantLocalVectorStore,
@@ -323,11 +337,32 @@ def run_pytest_fix_command(args: argparse.Namespace) -> int:
         extra_tools=extra_tools,
     )
     failure_log = Path(args.failure_log).read_text(encoding="utf-8") if args.failure_log else None
+    limits = ResourceLimits(
+        timeout_seconds=args.timeout_seconds,
+        cpu_count=args.cpu_count,
+        memory_mb=args.memory_mb,
+        pids=args.pids_limit,
+        max_output_chars=args.max_output_chars,
+        max_file_size_mb=args.max_file_size_mb,
+    )
+    if args.execution_backend == "docker":
+        uid = os.getuid() if hasattr(os, "getuid") and os.getuid() != 0 else 65532
+        gid = os.getgid() if hasattr(os, "getgid") and os.getgid() != 0 else 65532
+        execution_backend = DockerSandboxBackend(image=args.docker_image, uid=uid, gid=gid)
+    else:
+        execution_backend = LocalProcessBackend()
+        print(
+            "warning: --execution-backend local runs project code with host permissions; "
+            "use it only for trusted repositories",
+            file=sys.stderr,
+        )
     try:
         result = PytestFixWorkflow(
             project,
             adapter=adapter,
             semantic_search=semantic_search,
+            execution_backend=execution_backend,
+            resource_limits=limits,
             max_attempts=args.max_attempts,
         ).run(
             test_command=args.test_command,

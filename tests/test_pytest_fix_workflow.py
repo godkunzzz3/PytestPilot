@@ -1,4 +1,5 @@
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -67,6 +68,7 @@ class FakeRepairProvider(ChatProvider):
                 tool_calls=[ToolCall(id="read", name="view", arguments={"path": "src/value.py"})],
             )
         if self.calls == 2:
+            token = re.search(r"read_token=([A-Za-z0-9_-]+)", request.messages[-1].content).group(1)
             return ChatResponse(
                 provider=self.name,
                 model=self.model,
@@ -76,7 +78,12 @@ class FakeRepairProvider(ChatProvider):
                     ToolCall(
                         id="edit",
                         name="edit",
-                        arguments={"path": "src/value.py", "old": "VALUE = 1", "new": "VALUE = 2"},
+                        arguments={
+                            "path": "src/value.py",
+                            "old": "VALUE = 1",
+                            "new": "VALUE = 2",
+                            "read_token": token,
+                        },
                     )
                 ],
             )
@@ -109,6 +116,10 @@ def _fix(root: Path) -> None:
 
 def _noop(root: Path) -> None:
     return None
+
+
+def _poison(root: Path) -> None:
+    (root / "src" / "value.py").write_text("VALUE = 99\n", encoding="utf-8")
 
 
 def _write_read_then_mutation_transcript(path: Path, *, read_first: bool = True) -> None:
@@ -166,6 +177,58 @@ def test_second_attempt_can_succeed(tmp_path: Path) -> None:
     assert len(result.attempts) == 2
     assert result.attempts[0].focused_result.passed is False
     assert result.attempts[1].full_result is not None and result.attempts[1].full_result.passed
+
+
+def test_second_attempt_starts_from_baseline_not_failed_first_patch(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+
+    def assert_baseline_then_fix(root: Path) -> None:
+        assert (root / "src" / "value.py").read_text(encoding="utf-8") == "VALUE = 1\n"
+        _fix(root)
+
+    result = PytestFixWorkflow(
+        tmp_path,
+        adapter=ScriptedAdapter([_poison, assert_baseline_then_fix]),
+        max_attempts=2,
+    ).run(test_command="python -m pytest -q")
+
+    assert result.status == "passed"
+    assert "VALUE = 99" in result.attempts[0].attempt_patch
+    assert "VALUE = 99" not in result.attempts[1].attempt_patch
+    assert result.attempts[0].selected is False
+    assert result.attempts[1].selected is True
+    assert result.attempts[0].base_commit == result.attempts[1].base_commit
+    assert (tmp_path / "src" / "value.py").read_text(encoding="utf-8") == "VALUE = 2\n"
+
+
+def test_failed_attempts_leave_original_repository_unchanged(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+
+    result = PytestFixWorkflow(
+        tmp_path,
+        adapter=ScriptedAdapter([_poison, _poison]),
+        max_attempts=2,
+    ).run(test_command="python -m pytest -q")
+
+    assert result.status == "failed"
+    assert all(attempt.selected is False for attempt in result.attempts)
+    assert (tmp_path / "src" / "value.py").read_text(encoding="utf-8") == "VALUE = 1\n"
+    assert result.final_diff == ""
+
+
+def test_dirty_git_repository_is_rejected_before_attempts(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+    _init_git(tmp_path)
+    (tmp_path / "src" / "value.py").write_text("VALUE = 7\n", encoding="utf-8")
+
+    try:
+        PytestFixWorkflow(tmp_path, adapter=NeverAdapter(), max_attempts=1).run(
+            test_command="python -m pytest -q"
+        )
+    except RuntimeError as exc:
+        assert "clean Git worktree" in str(exc)
+    else:
+        raise AssertionError("dirty user worktree must not be used as an attempt baseline")
 
 
 def test_attempt_limit_returns_two_when_tests_still_fail(tmp_path: Path) -> None:

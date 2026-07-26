@@ -7,16 +7,28 @@ import sys
 from pathlib import Path
 
 from firstcoder.permissions.types import PermissionAction
+from firstcoder.execution import ExecutionBackend, ResourceLimits
 from firstcoder.tools.types import Tool, ToolPermissionSpec, ToolResult, make_error_result, make_text_result
 from firstcoder.utils.introspection import tool_from_function
 from firstcoder.utils.execution_sandbox import ExecutionSandbox
 from firstcoder.utils.sandbox_access import SandboxAccess
 
 
-def create_python_exec_tool(root: str | Path, *, access: SandboxAccess | None = None) -> Tool:
+def create_python_exec_tool(
+    root: str | Path,
+    *,
+    access: SandboxAccess | None = None,
+    execution_backend: ExecutionBackend | None = None,
+    resource_limits: ResourceLimits | None = None,
+) -> Tool:
     """创建 Python 代码执行工具。"""
 
-    sandbox = ExecutionSandbox(root, access=access)
+    sandbox = ExecutionSandbox(
+        root,
+        access=access,
+        backend=execution_backend,
+        resource_limits=resource_limits,
+    )
 
     def python_exec(code: str, cwd: str = ".", timeout_seconds: int = 30, max_output_chars: int = 20000) -> ToolResult:
         """在项目内执行 Python 代码；高风险，需显式启用。"""

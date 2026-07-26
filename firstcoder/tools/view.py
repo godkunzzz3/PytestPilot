@@ -5,13 +5,19 @@ from __future__ import annotations
 from pathlib import Path
 
 from firstcoder.tools.types import Tool, ToolResult, make_error_result, make_text_result
+from firstcoder.tools.fresh_source import FreshSourceGuard
 from firstcoder.utils.introspection import tool_from_function
 from firstcoder.utils.sandbox import PathSandbox
 from firstcoder.utils.sandbox_access import SandboxAccess
 from firstcoder.utils.text import safe_read_text
 
 
-def create_view_tool(root: str | Path, *, access: SandboxAccess | None = None) -> Tool:
+def create_view_tool(
+    root: str | Path,
+    *,
+    access: SandboxAccess | None = None,
+    fresh_source_guard: FreshSourceGuard | None = None,
+) -> Tool:
     """创建读取文本文件的工具。"""
 
     sandbox = PathSandbox(root, access=access)
@@ -39,14 +45,22 @@ def create_view_tool(root: str | Path, *, access: SandboxAccess | None = None) -
         content = "\n".join(f"{line_number}: {line}" for line_number, line in enumerate(selected, start=offset + 1))
         truncated = offset + limit < len(lines)
 
+        revision = fresh_source_guard.issue(path) if fresh_source_guard is not None else None
+        revision_text = (
+            f"\n\n[source_revision path={revision.path} sha256={revision.sha256} "
+            f"size={revision.size} read_token={revision.token}]"
+            if revision is not None
+            else ""
+        )
         return make_text_result(
             "view",
-            content or "没有可显示内容。",
+            (content or "没有可显示内容。") + revision_text,
             path=sandbox.relative(target),
             start_line=start_line,
             end_line=end_line,
             truncated=truncated,
             total_lines=len(lines),
+            source_revision=revision.to_dict() if revision is not None else None,
         )
 
     return tool_from_function(view)

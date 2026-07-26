@@ -411,6 +411,8 @@ def test_parser_supports_index_and_pytest_fix_subcommands() -> None:
     assert fix.command == "pytest-fix"
     assert fix.failure_log == "ci.log"
     assert fix.max_attempts == 2
+    assert fix.execution_backend == "docker"
+    assert fix.docker_image == "firstcoder-pytest-sandbox:py311"
 
 
 def test_main_routes_pytest_fix_without_starting_chat_provider(monkeypatch, capsys) -> None:

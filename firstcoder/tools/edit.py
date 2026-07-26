@@ -6,24 +6,35 @@ from pathlib import Path
 
 from firstcoder.permissions.types import PermissionAction
 from firstcoder.tools.types import Tool, ToolPermissionSpec, ToolResult, make_error_result, make_text_result
+from firstcoder.tools.fresh_source import FreshSourceGuard, FreshSourceViolation
 from firstcoder.utils.introspection import tool_from_function
 from firstcoder.utils.sandbox import PathSandbox
 from firstcoder.utils.sandbox_access import SandboxAccess
 from firstcoder.utils.text import safe_read_text
 
 
-def create_edit_tool(root: str | Path, *, access: SandboxAccess | None = None) -> Tool:
+def create_edit_tool(
+    root: str | Path,
+    *,
+    access: SandboxAccess | None = None,
+    fresh_source_guard: FreshSourceGuard | None = None,
+) -> Tool:
     """创建替换文本片段的工具。"""
 
     sandbox = PathSandbox(root, access=access)
 
-    def edit(path: str, old: str, new: str, replace_all: bool = False) -> ToolResult:
+    def edit(path: str, old: str, new: str, replace_all: bool = False, read_token: str = "") -> ToolResult:
         """替换项目内 UTF-8 文本片段；默认只替换唯一匹配。"""
 
         try:
             target = sandbox.resolve_validated(path, expect="file")
         except ValueError as exc:
             return make_error_result("edit", str(exc))
+        if fresh_source_guard is not None:
+            try:
+                fresh_source_guard.validate_existing(path, read_token)
+            except FreshSourceViolation as exc:
+                return make_error_result("edit", f"FreshSourceGuard: {exc}", path=path)
         if old == "":
             return make_error_result("edit", "old 不能为空")
 
@@ -41,6 +52,8 @@ def create_edit_tool(root: str | Path, *, access: SandboxAccess | None = None) -
         new_text = text.replace(old, new) if replace_all else text.replace(old, new, 1)
         replacements = count if replace_all else 1
         target.write_text(new_text, encoding="utf-8")
+        if fresh_source_guard is not None:
+            fresh_source_guard.consume(read_token)
 
         return make_text_result(
             "edit",

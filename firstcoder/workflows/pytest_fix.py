@@ -3,11 +3,8 @@
 from __future__ import annotations
 
 import json
-import os
 import shlex
-import subprocess
 import sys
-import tempfile
 import time
 from collections import Counter
 from pathlib import Path
@@ -17,8 +14,10 @@ from firstcoder.ci import PytestRunReport, parse_pytest_output
 from firstcoder.eval.metrics import collect_diff_metrics, empty_runtime_metrics
 from firstcoder.eval.patch import collect_git_diff
 from firstcoder.eval.tasks import CodingTask, CodingTaskResult
+from firstcoder.execution import ExecutionBackend, LocalProcessBackend, ResourceLimits
 from firstcoder.retrieval.models import RetrievalUnavailableError
 from firstcoder.workflows.models import PytestCommandResult, PytestFixAttempt, PytestFixResult
+from firstcoder.workflows.attempt_workspace import AttemptWorkspaceManager, apply_selected_files
 from firstcoder.workflows.prompts import build_pytest_repair_prompt
 
 
@@ -37,39 +36,40 @@ class SemanticSearchLike(Protocol):
 
 
 class PytestCommandRunner(Protocol):
-    def run(self, command: str) -> PytestCommandResult:
+    def run(self, command: str, *, cwd: Path | None = None) -> PytestCommandResult:
         ...
 
 
 class SubprocessPytestCommandRunner:
-    def __init__(self, root: str | Path, *, timeout_seconds: float = 300.0) -> None:
-        self.root = Path(root).resolve()
-        self.timeout_seconds = timeout_seconds
+    """Compatibility wrapper around an explicit ExecutionBackend."""
 
-    def run(self, command: str) -> PytestCommandResult:
+    def __init__(
+        self,
+        root: str | Path,
+        *,
+        backend: ExecutionBackend | None = None,
+        limits: ResourceLimits | None = None,
+        timeout_seconds: float | None = None,
+    ) -> None:
+        self.root = Path(root).resolve()
+        self.backend = backend or LocalProcessBackend()
+        self.limits = limits or ResourceLimits(timeout_seconds=timeout_seconds or 300.0)
+
+    def run(self, command: str, *, cwd: Path | None = None) -> PytestCommandResult:
         started = time.perf_counter()
         args = shlex.split(command)
         if not args:
             raise ValueError("pytest command cannot be empty")
         if args[:2] in (["python", "-m"], ["python3", "-m"]):
             args[0] = sys.executable
-        with tempfile.TemporaryDirectory(prefix="firstcoder-pycache-") as pycache:
-            env = os.environ.copy()
-            env["PYTHONPYCACHEPREFIX"] = pycache
-            env["PYTHONDONTWRITEBYTECODE"] = "1"
-            completed = subprocess.run(
-                args,
-                cwd=self.root,
-                env=env,
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                timeout=self.timeout_seconds,
-            )
+        completed = self.backend.run(args, (cwd or self.root).resolve(), self.limits)
+        output = "\n".join(part for part in (completed.stdout, completed.stderr) if part)
+        if completed.error:
+            output = "\n".join(part for part in (output, completed.error) if part)
         return PytestCommandResult(
             command=command,
-            exit_code=completed.returncode,
-            output=completed.stdout or "",
+            exit_code=completed.exit_code,
+            output=output,
             elapsed_seconds=round(time.perf_counter() - started, 6),
         )
 
@@ -82,12 +82,24 @@ class PytestFixWorkflow:
         adapter: RepairAdapter,
         semantic_search: SemanticSearchLike | None = None,
         command_runner: PytestCommandRunner | None = None,
+        execution_backend: ExecutionBackend | None = None,
+        resource_limits: ResourceLimits | None = None,
+        editable_paths: list[str] | tuple[str, ...] | None = None,
         max_attempts: int = 2,
     ) -> None:
         self.project_root = Path(project_root).resolve()
         self.adapter = adapter
         self.semantic_search = semantic_search
-        self.command_runner = command_runner or SubprocessPytestCommandRunner(self.project_root)
+        self.execution_backend = execution_backend or LocalProcessBackend()
+        self.resource_limits = resource_limits or ResourceLimits()
+        self.command_runner = command_runner or SubprocessPytestCommandRunner(
+            self.project_root,
+            backend=self.execution_backend,
+            limits=self.resource_limits,
+        )
+        self.editable_paths = list(editable_paths) if editable_paths is not None else _default_editable_paths(
+            self.project_root
+        )
         self.max_attempts = min(2, max(1, max_attempts))
 
     def run(
@@ -99,7 +111,9 @@ class PytestFixWorkflow:
     ) -> PytestFixResult:
         started = time.perf_counter()
         if failure_log is None:
-            baseline_command = self.command_runner.run(test_command)
+            with AttemptWorkspaceManager(self.project_root) as baseline_workspaces:
+                baseline_root = baseline_workspaces.create(0)
+                baseline_command = self.command_runner.run(test_command, cwd=baseline_root)
         else:
             baseline_command = PytestCommandResult(
                 command="<provided failure log>",
@@ -122,54 +136,91 @@ class PytestFixWorkflow:
             _write_result(json_out, result)
             return result
 
-        for number in range(1, self.max_attempts + 1):
-            deterministic = _deterministic_candidates(self.project_root, current_report)
-            semantic = self._semantic_candidates(current_report)
-            focused_command = _focused_command(test_command, current_report)
-            task = CodingTask(
-                instance_id=f"pytest-fix-attempt-{number}",
-                repo_path=self.project_root,
-                problem_statement=build_pytest_repair_prompt(
+        with AttemptWorkspaceManager(self.project_root) as workspaces:
+            previous_evidence = ""
+            for number in range(1, self.max_attempts + 1):
+                attempt_root = workspaces.create(number)
+                deterministic = _deterministic_candidates(attempt_root, current_report)
+                semantic = self._semantic_candidates(current_report)
+                focused_command = _focused_command(test_command, current_report)
+                problem_statement = build_pytest_repair_prompt(
                     current_report,
                     deterministic_candidates=deterministic,
                     semantic_candidates=semantic,
                     focused_command=focused_command,
                     full_command=test_command,
-                ),
-                metadata={"workflow": "pytest_fix", "attempt": number, "test_command": test_command},
-            )
-            agent_result = self.adapter.run_task(task)
-            violation = _source_read_policy_violation(
-                agent_result.transcript_path,
-                mutation_observed=bool(agent_result.model_patch),
-            )
-            focused = self.command_runner.run(focused_command)
-            full = self.command_runner.run(test_command) if focused.passed else None
-            attempts.append(
-                PytestFixAttempt(
-                    number=number,
-                    deterministic_candidates=deterministic,
-                    semantic_candidates=semantic,
-                    transcript_path=str(agent_result.transcript_path) if agent_result.transcript_path else None,
-                    focused_result=focused,
-                    full_result=full,
-                    source_read_policy_violation=violation,
-                    runtime_metrics=dict(agent_result.runtime_metrics),
                 )
-            )
-            validation = full or focused
-            current_report = _report(validation)
-            if full is not None and full.passed:
-                result = self._result(
-                    status="passed",
-                    test_command=test_command,
-                    baseline=baseline_report,
-                    final=current_report,
-                    attempts=attempts,
-                    started=started,
+                if previous_evidence:
+                    problem_statement += previous_evidence
+                task = CodingTask(
+                    instance_id=f"pytest-fix-attempt-{number}",
+                    repo_path=attempt_root,
+                    problem_statement=problem_statement,
+                    base_commit=workspaces.base_commit,
+                    metadata={
+                        "workflow": "pytest_fix",
+                        "attempt": number,
+                        "test_command": test_command,
+                        "existing_paths": self.editable_paths,
+                        "editable_paths": self.editable_paths,
+                        "enforce_fresh_source_guard": True,
+                        "execution_backend": self.execution_backend,
+                        "resource_limits": self.resource_limits,
+                    },
                 )
-                _write_result(json_out, result)
-                return result
+                agent_result = self.adapter.run_task(task)
+                attempt_patch = collect_git_diff(attempt_root, include_untracked=True)
+                transcript_path = _preserve_transcript(
+                    agent_result.transcript_path,
+                    project_root=self.project_root,
+                    attempt_number=number,
+                )
+                violation = _source_read_policy_violation(
+                    transcript_path,
+                    mutation_observed=bool(attempt_patch),
+                )
+                focused = self.command_runner.run(focused_command, cwd=attempt_root)
+                full = self.command_runner.run(test_command, cwd=attempt_root) if focused.passed else None
+                validation = full or focused
+                current_report = _report(validation)
+                selected = full is not None and full.passed
+                introduced = _introduced_failures(baseline_report, current_report)
+                attempts.append(
+                    PytestFixAttempt(
+                        number=number,
+                        base_commit=workspaces.base_commit,
+                        attempt_patch=attempt_patch,
+                        deterministic_candidates=deterministic,
+                        semantic_candidates=semantic,
+                        transcript_path=str(transcript_path) if transcript_path else None,
+                        focused_result=focused,
+                        full_result=full,
+                        source_read_policy_violation=violation,
+                        introduced_failures=introduced,
+                        selected=selected,
+                        runtime_metrics=dict(agent_result.runtime_metrics),
+                    )
+                )
+                if selected:
+                    apply_selected_files(
+                        attempt_root,
+                        self.project_root,
+                        editable_paths=self.editable_paths,
+                    )
+                    result = self._result(
+                        status="passed",
+                        test_command=test_command,
+                        baseline=baseline_report,
+                        final=current_report,
+                        attempts=attempts,
+                        started=started,
+                    )
+                    _write_result(json_out, result)
+                    return result
+                previous_evidence = _previous_attempt_evidence(
+                    attempt_patch=attempt_patch,
+                    validation=current_report,
+                )
 
         result = self._result(
             status="failed",
@@ -248,6 +299,7 @@ def _focused_command(command: str, report: PytestRunReport) -> str:
 
 
 def _deterministic_candidates(root: Path, report: PytestRunReport) -> list[str]:
+    root = root.resolve()
     candidates: list[str] = []
     for failure in report.failures:
         for location in failure.source_locations:
@@ -255,6 +307,12 @@ def _deterministic_candidates(root: Path, report: PytestRunReport) -> list[str]:
         node_path = failure.node_id.split("::", 1)[0]
         _append_repo_path(root, node_path, candidates)
         test_name = Path(node_path).name
+        if not test_name.startswith("test_"):
+            for location in failure.source_locations:
+                location_name = Path(location.path).name
+                if location_name.startswith("test_"):
+                    test_name = location_name
+                    break
         if test_name.startswith("test_"):
             target_name = test_name.removeprefix("test_")
             for path in sorted(root.rglob(target_name)):
@@ -338,3 +396,56 @@ def _write_result(path: str | Path | None, result: PytestFixResult) -> None:
     output = Path(path)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(result.to_dict(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _default_editable_paths(root: Path) -> list[str]:
+    ignored_parts = {".git", ".firstcoder", ".venv", "__pycache__", ".pytest_cache", "tests", "test"}
+    return [
+        path.relative_to(root).as_posix()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+        and path.suffix == ".py"
+        and not ignored_parts.intersection(path.relative_to(root).parts)
+    ]
+
+
+def _preserve_transcript(
+    transcript_path: str | Path | None,
+    *,
+    project_root: Path,
+    attempt_number: int,
+) -> Path | None:
+    if transcript_path is None:
+        return None
+    source = Path(transcript_path)
+    if not source.is_file():
+        return source
+    try:
+        source.relative_to(project_root)
+        return source
+    except ValueError:
+        destination = project_root / ".firstcoder" / "pytest-fix-transcripts" / f"attempt-{attempt_number}.jsonl"
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(source.read_bytes())
+        return destination
+
+
+def _introduced_failures(baseline: PytestRunReport, validation: PytestRunReport) -> list[str]:
+    baseline_fingerprints = {failure.fingerprint for failure in baseline.failures}
+    return [
+        failure.fingerprint
+        for failure in validation.failures
+        if failure.fingerprint and failure.fingerprint not in baseline_fingerprints
+    ]
+
+
+def _previous_attempt_evidence(*, attempt_patch: str, validation: PytestRunReport) -> str:
+    bounded_patch = attempt_patch[-12_000:]
+    bounded_output = validation.bounded_raw_output[-8_000:]
+    return (
+        "\n\nPrevious attempt evidence (the current worktree was reset to the original baseline; "
+        "the patch below is evidence only and is not implicitly applied):\n"
+        f"Patch:\n{bounded_patch or '<empty>'}\n"
+        f"Validation exit code: {validation.exit_code}\n"
+        f"Validation output:\n{bounded_output}\n"
+    )

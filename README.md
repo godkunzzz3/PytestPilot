@@ -65,13 +65,28 @@ python -m venv .venv
 模型与凭证配置完成后，运行 pytest 修复闭环：
 
 ```sh
+# 一次性构建无网络运行所需的基础镜像；项目有额外依赖时应基于此镜像预装依赖。
+docker build -f docker/pytest-sandbox.Dockerfile \
+  -t firstcoder-pytest-sandbox:py311 .
+
 .venv/bin/firstcoder pytest-fix \
   --project /path/to/python-project \
   --test-command "python -m pytest -q" \
+  --execution-backend docker \
   --json-out runs/pytest-fix-result.json
 ```
 
-`pytest-fix` 默认最多执行两次修复尝试，不重试 Provider 请求。Qdrant 不可用时，Parser 与确定性候选仍会继续工作。
+`pytest-fix` 默认使用 Docker，最多执行两次修复尝试，不重试 Provider 请求。Docker 运行参数固定关闭网络、使用只读基础文件系统、丢弃 capabilities、启用 `no-new-privileges`，并限制 CPU、内存、pids、单文件大小、输出和时间。目标仓库必须是干净 Git worktree；每次 Attempt 从同一 baseline commit 建立独立 worktree，只有通过 focused 和 full pytest 的候选才会回写原仓库。依赖必须预装进 sandbox 镜像，因为测试阶段没有网络。
+
+仅对可信项目或本地单元测试，可显式使用宿主进程：
+
+```sh
+.venv/bin/firstcoder pytest-fix \
+  --project /path/to/trusted-project \
+  --execution-backend local
+```
+
+Local backend 没有容器级文件系统和网络隔离，CLI 会输出安全警告。写工具则由 Runtime `FreshSourceGuard` 强制要求同路径、未过期、SHA-256 未变化的 `read_token`；读取其他文件或使用 stale token 无法通过写入校验。Qdrant 不可用时，Parser 与确定性候选仍会继续工作。详细威胁模型见 `docs/PYTESTPILOT_SECURITY.md`。
 
 ## 离线验证
 

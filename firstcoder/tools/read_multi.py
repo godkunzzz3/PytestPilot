@@ -8,13 +8,19 @@ from __future__ import annotations
 from pathlib import Path
 
 from firstcoder.tools.types import Tool, ToolResult, make_error_result, make_text_result
+from firstcoder.tools.fresh_source import FreshSourceGuard
 from firstcoder.utils.introspection import tool_from_function
 from firstcoder.utils.sandbox import PathSandbox
 from firstcoder.utils.sandbox_access import SandboxAccess
 from firstcoder.utils.text import safe_read_text
 
 
-def create_read_multi_tool(root: str | Path, *, access: SandboxAccess | None = None) -> Tool:
+def create_read_multi_tool(
+    root: str | Path,
+    *,
+    access: SandboxAccess | None = None,
+    fresh_source_guard: FreshSourceGuard | None = None,
+) -> Tool:
     """创建批量文件读取工具。"""
 
     sandbox = PathSandbox(root, access=access)
@@ -54,8 +60,15 @@ def create_read_multi_tool(root: str | Path, *, access: SandboxAccess | None = N
                 continue
 
             relative = sandbox.relative(target)
+            revision = fresh_source_guard.issue(relative) if fresh_source_guard is not None else None
             file_header = f"=== {relative} ===\n"
-            file_text = file_header + text + "\n"
+            revision_text = (
+                f"\n[source_revision path={revision.path} sha256={revision.sha256} "
+                f"size={revision.size} read_token={revision.token}]\n"
+                if revision is not None
+                else "\n"
+            )
+            file_text = file_header + text + revision_text
 
             # 检查总长度限制
             if total_chars + len(file_text) > max_total_chars:
@@ -70,7 +83,13 @@ def create_read_multi_tool(root: str | Path, *, access: SandboxAccess | None = N
 
             contents.append(file_text)
             total_chars += len(file_text)
-            file_data.append({"path": relative, "lines": text.count("\n") + 1})
+            file_data.append(
+                {
+                    "path": relative,
+                    "lines": text.count("\n") + 1,
+                    "source_revision": revision.to_dict() if revision is not None else None,
+                }
+            )
 
         content = "".join(contents).rstrip("\n")
 

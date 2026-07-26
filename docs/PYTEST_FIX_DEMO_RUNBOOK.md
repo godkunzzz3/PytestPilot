@@ -128,9 +128,13 @@ Vector 六个合规运行均有一次 `code_search`，且候选随后被 `read_m
 只有用户明确确认凭证、额度和预算后才运行真实模型。命令会使用现有 Provider 配置，不应复制或打印 API Key；DeepSeek 审计实验使用 `benchmark.deepseek_paired` 的请求预算入口，不使用未包装的默认 Runner：
 
 ```sh
+docker build -f docker/pytest-sandbox.Dockerfile \
+  -t firstcoder-pytest-sandbox:py311 .
+
 .venv/bin/firstcoder pytest-fix \
   --project /path/to/python-repo \
   --test-command "python -m pytest -q --tb=short" \
+  --execution-backend docker \
   --json-out runs/pytest-fix-result.json
 
 .venv/bin/python -m benchmark.deepseek_paired \

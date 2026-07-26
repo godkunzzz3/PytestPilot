@@ -27,7 +27,6 @@
 
 - 新的完整 Trace 子系统；
 - `archive_read`（复用已有 `retrieve_archive`）；
-- FreshSourceGuard；
 - 专用 TUI 面板；
 - 14 个 Benchmark；
 - 多 Agent；
@@ -112,3 +111,4 @@
 - 两个语义任务的受控小样本中，Baseline 6/6、合规 Vector 6/6；Vector 实际调用 `code_search` 6 次并重新读取候选。两组通过率相同，不能声称检索提升准确率；Vector 平均 Token、Tool Call 与耗时更高。
 - 初始 12 项中有两个 Vector 运行测试虽通过但未调用 `code_search`，被标记并排除；策略门加固后仅补跑这两项并通过。本轮 Smoke、12 项及 2 个补跑累计保守成本 `$0.08710954`，低于 `$0.25`，无 usage 缺失或预算中止。
 - 加固后完整测试：`.venv/bin/python -m pytest tests -q` 得到 891 passed、2 skipped、0 failed（37.61 秒）；文档完成后仍需执行最终一次完整验证。
+- 2026-07-25 根据生产安全审计扩展原 MVP 范围：`pytest-fix` 增加 Docker Sandbox Backend、Runtime `FreshSourceGuard` 和逐 Attempt Git worktree 隔离；Docker 成为 CLI 默认，Local backend 仅用于可信项目与单元测试。
