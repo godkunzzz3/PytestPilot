@@ -131,7 +131,9 @@ class DockerSandboxBackend:
             f"--ulimit=fsize={limits.max_file_size_mb * 1024}:{limits.max_file_size_mb * 1024}",
             f"--tmpfs=/tmp:rw,noexec,nosuid,nodev,size={limits.tmpfs_mb}m",
             "--mount",
-            f"type=bind,src={root},dst=/workspace,rw",
+            # Bind mounts are read-write by default; `rw` is not a valid
+            # standalone field in Docker's `--mount` key=value syntax.
+            f"type=bind,src={root},dst=/workspace",
             "--workdir=/workspace",
         ]
         for key, value in sorted(self.environment.items()):

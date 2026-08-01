@@ -9,7 +9,7 @@ from firstcoder.providers.types import ToolDefinition
 
 def _inputs(**overrides: object) -> SystemPromptInputs:
     values = {
-        "base_rules": "你是 FirstCoder。",
+        "base_rules": "你是 PytestPilot。",
         "agents_md": "项目规则：上下文放在 firstcoder/context。",
         "tools": [
             ToolDefinition(
@@ -44,7 +44,18 @@ def test_system_prompt_cache_reuses_prefix_when_fingerprint_matches() -> None:
     assert first.fingerprint == second.fingerprint
     assert first is second
     assert first.messages[0].role == "system"
-    assert "你是 FirstCoder。" in first.messages[0].content
+    assert "你是 PytestPilot。" in first.messages[0].content
+
+
+def test_default_agent_identity_is_pytestpilot() -> None:
+    from firstcoder.agent.session import DEFAULT_BASE_RULES
+
+    entry = SystemPromptBuilder().build(_inputs(base_rules=DEFAULT_BASE_RULES))
+    content = entry.messages[0].content
+
+    assert "PytestPilot" in content
+    assert "You are PytestPilot" in content
+    assert "You are FirstCoder" not in content
 
 
 def test_agents_md_change_invalidates_system_prompt_fingerprint() -> None:

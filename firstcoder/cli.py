@@ -433,12 +433,12 @@ def run_repl(
         else:
             response = chat_runner.run_user_turn(line)
 
-        print(f"FirstCoder> {response.content}")
+        print(f"PytestPilot> {response.content}")
         pending = getattr(chat_runner, "last_pending_input", None)
         while pending is not None and auto_approve and _pending_kind(pending) == "permission_confirmation":
             print("Auto-approve> allow_once")
             response = chat_runner.resume_with_user_input(_pending_id(pending), "allow_once")
-            print(f"FirstCoder> {response.content}")
+            print(f"PytestPilot> {response.content}")
             pending = getattr(chat_runner, "last_pending_input", None)
 
         if pending is not None:

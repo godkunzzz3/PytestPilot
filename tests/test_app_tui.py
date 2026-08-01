@@ -150,7 +150,7 @@ def test_firstcoder_app_topbar_text_includes_session_id() -> None:
     app = FirstCoderApp(current_session=FakeSession())
 
     assert app._topbar_text() == (
-        "[#7bba55]FirstCoder[/]   [#303238]·[/]   [#7bba55]idle · ready[/]   "
+        "[#7bba55]PytestPilot[/]   [#303238]·[/]   [#7bba55]idle · ready[/]   "
         "[#303238]·[/]   [#6e6d72]sess_test[/]   "
         "[#303238]·[/]   [#6e6d72]standard[/]"
     )
@@ -167,7 +167,7 @@ def test_firstcoder_app_topbar_text_includes_provider_model_mode_and_cwd() -> No
     )
 
     assert app._topbar_text() == (
-        "[#7bba55]FirstCoder[/]   [#303238]·[/]   [#7bba55]idle · ready[/]   "
+        "[#7bba55]PytestPilot[/]   [#303238]·[/]   [#7bba55]idle · ready[/]   "
         "[#303238]·[/]   [#6e6d72]sess_test[/]   "
         "[#303238]·[/]   [#6e6d72]yurenapi/gpt-5.5[/]   "
         "[#303238]·[/]   [#6e6d72]standard[/]   [#303238]·[/]   [#6e6d72]cwd FirstCoder[/]"
@@ -214,7 +214,7 @@ def test_firstcoder_app_topbar_uses_spacious_two_sided_layout_when_width_is_know
 
     text = app._topbar_text(width=120)
 
-    assert text.startswith("[#7bba55]FirstCoder[/]")
+    assert text.startswith("[#7bba55]PytestPilot[/]")
     assert "   [#303238]·[/]   [#6e6d72]sess_test[/]" not in text
     assert "[#7bba55]idle · ready[/]" in text
     assert "[#6e6d72]sess_test[/]" in text
@@ -230,7 +230,7 @@ def test_firstcoder_app_topbar_highlights_bypass_mode_and_truncates_long_session
     app = FirstCoderApp(current_session=BypassSession())
 
     assert app._topbar_text() == (
-        "[#7bba55]FirstCoder[/]   [#303238]·[/]   [#7bba55]idle · ready[/]   "
+        "[#7bba55]PytestPilot[/]   [#303238]·[/]   [#7bba55]idle · ready[/]   "
         "[#303238]·[/]   [#6e6d72]sess_c8d401e2[/]   "
         "[#303238]·[/]   [#b28443]bypass[/]"
     )
@@ -257,7 +257,7 @@ def test_tui_transcript_records_structured_entries_with_stable_labels() -> None:
     )
 
     assert [entry.id for entry in transcript.entries] == [user.id, assistant.id, tool.id]
-    assert [entry.label for entry in transcript.entries] == ["you", "FirstCoder", "tool exec_command running"]
+    assert [entry.label for entry in transcript.entries] == ["you", "PytestPilot", "tool exec_command running"]
     assert transcript.entries[-1].status == "running"
 
 
@@ -304,7 +304,7 @@ def test_firstcoder_app_records_rendered_messages_in_transcript(monkeypatch) -> 
 
     assert [(entry.kind, entry.label, entry.body) for entry in app.transcript.entries] == [
         (TuiEntryKind.USER, "you", "> hello"),
-        (TuiEntryKind.ASSISTANT, "FirstCoder", "**hi**"),
+        (TuiEntryKind.ASSISTANT, "PytestPilot", "**hi**"),
     ]
 
 
@@ -680,7 +680,7 @@ def test_firstcoder_app_streams_text_delta_without_repeating_final_text(monkeypa
 
     assert [type(widget).__name__ for widget in output.mounted] == ["FirstCoderMarkdown"]
     assert output.mounted[0].allow_select is False
-    assert output.mounted[0].updates[-1] == "FirstCoder:\n\nhello"
+    assert output.mounted[0].updates[-1] == "PytestPilot:\n\nhello"
     assert app._stream_text_buffer == "hello"
     assert runner.seen == [
         ChatStreamEvent(kind="text_delta", text="he"),
@@ -703,7 +703,7 @@ def test_firstcoder_app_streaming_skips_normalized_duplicate_assistant_line(monk
 
     assert [type(widget).__name__ for widget in output.mounted] == ["FirstCoderMarkdown"]
     assert output.mounted[0].allow_select is False
-    assert output.mounted[0].updates[-1] == "FirstCoder:\n\nhello"
+    assert output.mounted[0].updates[-1] == "PytestPilot:\n\nhello"
 
 
 def test_firstcoder_app_paces_stream_markdown_updates(monkeypatch) -> None:
@@ -720,12 +720,12 @@ def test_firstcoder_app_paces_stream_markdown_updates(monkeypatch) -> None:
     markdown = output.mounted[0]
     assert type(markdown).__name__ == "FirstCoderMarkdown"
     assert markdown.allow_select is False
-    assert markdown.updates == ["FirstCoder:\n\n我"]
+    assert markdown.updates == ["PytestPilot:\n\n我"]
     assert app._stream_text_buffer == "我在这里"
 
     app._flush_stream_text()
 
-    assert markdown.updates[-1] == "FirstCoder:\n\n我在这里"
+    assert markdown.updates[-1] == "PytestPilot:\n\n我在这里"
 
 
 def test_firstcoder_app_does_not_scroll_stream_when_render_is_deferred(monkeypatch) -> None:
@@ -1333,8 +1333,8 @@ def test_firstcoder_app_starts_new_stream_block_after_tool_event(monkeypatch) ->
     first_markdown, _, second_markdown = output.mounted
     assert first_markdown.allow_select is False
     assert second_markdown.allow_select is False
-    assert first_markdown.updates[-1] == "FirstCoder:\n\n我先看看。"
-    assert second_markdown.updates[-1] == "FirstCoder:\n\n看完了。"
+    assert first_markdown.updates[-1] == "PytestPilot:\n\n我先看看。"
+    assert second_markdown.updates[-1] == "PytestPilot:\n\n看完了。"
 
 
 def test_permission_requested_tool_event_uses_permission_style() -> None:

@@ -40,7 +40,7 @@ class ProviderLlmCompactSummarizer(LlmCompactSummarizer):
                         ChatMessage(
                             role="system",
                             content=(
-                                "你是 FirstCoder 的上下文压缩器。请只输出一段中文摘要，"
+                                "你是 PytestPilot 的上下文压缩器。请只输出一段中文摘要，"
                                 "保留用户目标、已完成决策、关键文件、未解决问题和下一步。"
                             ),
                         ),
