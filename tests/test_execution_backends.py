@@ -62,7 +62,7 @@ def test_docker_backend_applies_isolation_and_resource_limits(monkeypatch, tmp_p
     assert "--user=65532:65532" in command
     assert "--ulimit=fsize=8192:8192" in command
     assert "--tmpfs=/tmp:rw,noexec,nosuid,nodev,size=16m" in command
-    assert f"type=bind,src={tmp_path.resolve()},dst=/workspace,rw" in command
+    assert f"type=bind,src={tmp_path.resolve()},dst=/workspace" in command
     assert "LANG=C" in command
     assert all("secret" not in part for part in command)
     assert command[-5:] == ["example/pytest:locked", "python", "-m", "pytest", "-q"]

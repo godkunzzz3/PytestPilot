@@ -84,7 +84,7 @@ class CurrentSessionLike(Protocol):
 
 @dataclass(slots=True)
 class FirstCoderTuiConfig:
-    title: str = "FirstCoder"
+    title: str = "PytestPilot"
     provider_name: str | None = None
     provider_model: str | None = None
     project_name: str | None = None
@@ -165,7 +165,7 @@ class FirstCoderApp(App[None]):
         self.title = self.config.title
         self._refresh_session_subtitle()
         self._write_line(
-            "FirstCoder ready. Commands: /sessions, /session, /resume, /share, /rename, "
+            "PytestPilot ready. Commands: /sessions, /session, /resume, /share, /rename, "
             "/context, /compact status, /compact",
             classes="message system-message",
         )
@@ -443,7 +443,7 @@ class FirstCoderApp(App[None]):
     def _topbar_text(self, *, session_id: str | None = None, width: int | None = None) -> str:
         if session_id is None and self.current_session is not None:
             session_id = self.current_session.session_id
-        brand = "[#7bba55]FirstCoder[/]"
+        brand = "[#7bba55]PytestPilot[/]"
         status = _activity_markup(self._activity_text)
         metadata_parts = [f"[#6e6d72]{escape(_short_session_id(session_id) if session_id else 'no session')}[/]"]
         if self.config.provider_name or self.config.provider_model:
@@ -841,7 +841,7 @@ class FirstCoderApp(App[None]):
                 self._schedule_stream_flush()
             return
         if hasattr(output, "write"):
-            prefix = "FirstCoder:\n" if self._stream_text_buffer == text else ""
+            prefix = "PytestPilot:\n" if self._stream_text_buffer == text else ""
             output.write(f"{prefix}{text}")
 
     def _close_stream_segment_for_tool(self) -> None:
@@ -876,7 +876,7 @@ class FirstCoderApp(App[None]):
         if self._stream_rendered_text == self._stream_text_buffer:
             return False
         self._stream_rendered_text = self._stream_text_buffer
-        _observe_markdown_update(self._stream_text_widget.update(f"FirstCoder:\n\n{self._stream_rendered_text}"))
+        _observe_markdown_update(self._stream_text_widget.update(f"PytestPilot:\n\n{self._stream_rendered_text}"))
         output = self.query_one("#output")
         self._scroll_output_end_if_pinned(output)
         return True

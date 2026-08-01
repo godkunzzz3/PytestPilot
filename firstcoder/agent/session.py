@@ -38,7 +38,7 @@ from firstcoder.skills.models import LoadedSkill, SkillCatalog
 from firstcoder.skills.session import replay_loaded_skills
 
 
-DEFAULT_BASE_RULES = "你是 FirstCoder，一个本地 AI coding agent。请遵守项目规则并优先保持上下文可恢复。"
+DEFAULT_BASE_RULES = "你是 PytestPilot，一个面向 Python/pytest 项目的本地 AI coding agent。请遵守项目规则并优先保持上下文可恢复。"
 
 
 @dataclass(slots=True)
